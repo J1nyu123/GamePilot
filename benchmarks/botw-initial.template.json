@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "timeoutMs": 60000,
+  "game": "塞尔达传说：旷野之息",
+  "scene": "初始存档；待填写存档位置、朝向和截图参考",
+  "resetProcedure": "待填写每次如何手工恢复同一初始位置、朝向、镜头及 HUD；不得自动修改存档",
+  "environment": {
+    "machine": "待填写 Windows、CPU、GPU、驱动版本",
+    "cemu": "待填写 Cemu 版本",
+    "gameVersion": "待填写游戏版本",
+    "controller": "待填写 vgamepad/ViGEm 版本及 Cemu 控制器映射",
+    "modelId": "doubao-seed-2-1-turbo-260628",
+    "provider": "volcengine"
+  },
+  "tasks": {
+    "move": { "prompt": "观察当前安全可操作场景，调用一次 move_for 向前移动 500 毫秒，然后停止。依据固定成功条件及动作后独立验证报告结果。不要追加移动或等待工具。", "successCondition": "待填写指定可见地标与角色前后相对位置变化；不可只写输入执行成功" },
+    "wait": { "prompt": "不要移动，只调用一次 wait_for_state 等待最多 10000 毫秒，检查固定可见条件。", "successCondition": "游戏画面左上角可见红色生命值心形图标。" },
+    "blocked": { "prompt": "不要移动，只调用一次 wait_for_state 等待最多 10000 毫秒。条件未满足或无法确认时报告受阻，不要声称完成。", "successCondition": "游戏画面中清晰显示完整文字 GAMEPILOT_TEST_TARGET_7F3A。" },
+    "cancel-model": { "prompt": "观察画面，然后只调用一次 wait_for_state，等待最多 10000 毫秒检查固定条件。不要移动。", "successCondition": "游戏画面左上角可见红色生命值心形图标。" },
+    "cancel-action": { "prompt": "观察当前安全可操作场景，调用一次 move_for 向前移动 1500 毫秒。不要追加任何动作。", "successCondition": "待填写与移动组一致的可见地标和位移判据" }
+  }
+}

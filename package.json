@@ -1,0 +1,43 @@
+{
+  "name": "gamepilot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/main/index.mjs",
+  "scripts": {
+    "dev": "tsx server.ts",
+    "build": "vite build",
+    "start": "node server.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "tsc --noEmit",
+    "mcp:gamepad": "node --import tsx src/mcp/gamepad-mcp-server.ts",
+    "test:mcp": "node --import tsx --test tests/mcp-gamepad.test.ts",
+    "test": "node --import tsx --test tests/config.test.ts tests/session.test.ts tests/capture.test.ts tests/input.test.ts tests/verification.test.ts tests/supervisor.test.ts tests/runner.test.ts tests/runner-session.test.ts tests/experiment.test.ts"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "dependencies": {
+    "@google/genai": "^2.29.1",
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "express": "^5.3.0",
+    "react": "19.0.0",
+    "react-dom": "19.0.0",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.64.0",
+    "@tailwindcss/vite": "4.1.3",
+    "@types/express": "^5.0.6",
+    "@types/node": "22.19.19",
+    "@types/react": "19.0.8",
+    "@types/react-dom": "19.0.3",
+    "@vitejs/plugin-react": "4.3.4",
+    "electron": "44.7.0",
+    "esbuild": "0.28.2",
+    "tailwindcss": "4.1.3",
+    "tsx": "4.19.2",
+    "typescript": "5.7.3",
+    "vite": "6.1.0"
+  }
+}

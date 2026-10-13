@@ -1,0 +1,10 @@
+{
+  "name": "gamepilot-p1-validation",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24.20.0" },
+  "scripts": {
+    "start": "node --import ./scripts/pi-source.mjs src/cli.mjs",
+    "test": "node --import ./scripts/pi-source.mjs --test test/runtime.test.mjs"
+  }
+}

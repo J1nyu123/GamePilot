@@ -1,0 +1,6 @@
+{
+  "name": "GamePilot",
+  "description": "Visual Agent Lab for visual closed-loop game control, target approach experiments, and independent verification.",
+  "permissions": [],
+  "capabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
