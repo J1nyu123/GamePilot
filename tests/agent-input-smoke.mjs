@@ -35,11 +35,15 @@ const server = createServer(async (req, res) => {
     send({ content: JSON.stringify({ mode: 'gameplay', visible: !lost, sameTarget: !lost, sceneStable: true, pathClear: true, coordinateSystem: 'ltrb-1000', bounds1000: lost ? null : { left: Math.round(box[0]*1000), top: Math.round(box[1]*1000), right: Math.round((box[0]+box[2])*1000), bottom: Math.round((box[1]+box[3])*1000) }, interaction: { status: 'present', text: 'A 调查（测试）' }, confidence: .95, facts: ['test target fixture'] }) }); send({}, 'stop');
   } else if (verifier) {
     const verdict = scenario === 'verified-fail' ? 'failed' : scenario === 'verified-inconclusive' ? 'inconclusive' : 'passed';
-    send({ content: JSON.stringify({ verdict, summary: `本地测试验证 ${verdict}`, facts: ['测试窗口可见帧计数'] }) }); send({}, 'stop');
+    const prompt = input.messages[1].content[0].text;
+    const criteria = JSON.parse(prompt.match(/Criteria: (.*)\n/)[1]);
+    const evidenceIds = JSON.parse(prompt.match(/Allowed evidence IDs: (.*)\n/)[1]);
+    send({ content: JSON.stringify({ verdict, summary: `本地测试验证 ${verdict}`, facts: ['测试窗口可见帧计数'],
+      criteria: criteria.map(c => ({ id: c.id, verdict, evidenceIds: evidenceIds.slice(1), reason: '测试窗口可见帧' })) }) }); send({}, 'stop');
   } else if (result) { toolResults.push(result.content); send({ content: scenario.startsWith('verified') ? 'Planner 声称完成，但最终结果以独立验证为准。' : '输入执行及释放已确认。游戏目标未经验证。' }); send({}, 'stop'); }
   else if (scenario.startsWith('approach-')) {
     const parameters = input.tools[0].function.parameters.properties;
-    const args = { targetId: parameters.targetId.const ?? parameters.targetId.enum?.[0], observationId: parameters.observationId.const ?? parameters.observationId.enum?.[0] };
+    const args = { targetId: parameters.targetId.const ?? parameters.targetId.enum?.[0], observationId: parameters.observationId.const ?? parameters.observationId.enum?.[0] ?? JSON.parse(input.messages[0].content.match(/Initial observationId=("[^"]+")/)[1]) };
     assert.ok(args.targetId && args.observationId);
     send({ tool_calls: [{ index: 0, id: 'p3-tool', type: 'function', function: { name: 'approach_target', arguments: JSON.stringify(args) } }] }); send({}, 'tool_calls');
   } else {
@@ -224,6 +228,7 @@ try {
   await mkdir('artifacts', { recursive: true });
   await page.getByRole('combobox', { name: '模型工具模式' }).selectOption('approach-xbox');
   await expect(page.getByRole('button', { name: /运行一次/ })).toBeDisabled();
+  if (!await page.locator('.approach-setup').evaluate(el => el.open)) await page.locator('.approach-setup > summary').click();
   await page.getByRole('textbox', { name: 'P3 目标描述' }).fill('唯一测试目标');
   await page.getByRole('textbox', { name: '成功条件' }).fill('测试目标在固定屏幕区域内且面积达标');
   const p3Reports = [];
@@ -232,8 +237,8 @@ try {
     await expect(page.locator('.run-status')).toHaveText(variant === 'approach-pass' ? '目标验证通过' : '任务受阻 / 未通过验证', { timeout: 30000 });
     const state = await page.evaluate(async () => (await window.gamepilot.getSnapshot()).value);
     assert.equal(state.summary.approach.executedSteps, variant === 'approach-pass' ? 2 : 1);
-    assert.equal(state.summary.approach.stopReason, variant === 'approach-pass' ? 'arrived' : 'target-lost');
-    await expect(page.getByLabel('P3 反馈进度')).toContainText(variant === 'approach-pass' ? 'arrived' : 'target-lost');
+    assert.equal(state.summary.approach.stopReason, variant === 'approach-pass' ? 'arrival-candidate' : 'target-lost');
+    await expect(page.getByLabel('P3 反馈进度')).toContainText(variant === 'approach-pass' ? 'arrival-candidate' : 'target-lost');
     const runDir = join(stateRoot, 'runs', state.runId);
     const audit = () => JSON.parse(execFileSync(process.execPath, ['--import', 'tsx', '--input-type', 'module', '-e', "import { auditApproach } from './src/trace/approach-audit.ts'; console.log(JSON.stringify(await auditApproach(process.argv[1])))", runDir], { cwd: root, encoding: 'utf8', windowsHide: true }));
     const report = audit(); assert.equal(report.technicalPassed, true, JSON.stringify(report.checks)); assert.equal(report.testData, true);
@@ -250,6 +255,25 @@ try {
       await page.screenshot({ path: 'artifacts/p3-approach.png' });
     }
   }
+  await page.getByRole('combobox', { name: 'P3 执行路径' }).selectOption('direct');
+  for (const variant of ['approach-pass', 'approach-lost']) {
+    scenario = variant; trackingRequests = 0;
+    const beforeRequests = requests, beforeVerifier = verifierRequests;
+    await run();
+    await expect(page.locator('.run-status')).toHaveText(variant === 'approach-pass' ? '目标验证通过' : '任务受阻 / 未通过验证', { timeout: 30000 });
+    const state = await page.evaluate(async () => (await window.gamepilot.getSnapshot()).value);
+    assert.equal(state.summary.runResult.strategy, 'direct'); assert.equal(state.summary.turns, 0);
+    assert.ok(!state.events.some(e => e.type === 'model_request' || e.type === 'tool_execution_start'));
+    assert.equal(requests - beforeRequests, trackingRequests + verifierRequests - beforeVerifier);
+    await expect(page.getByLabel('直接技能执行记录')).toBeVisible();
+    await expect(page.locator('.run-end')).toContainText('执行路径：直接技能');
+    const runDir = join(stateRoot, 'runs', state.runId);
+    const report = JSON.parse(execFileSync(process.execPath, ['--import', 'tsx', '--input-type', 'module', '-e', "import { auditApproach } from './src/trace/approach-audit.ts'; console.log(JSON.stringify(await auditApproach(process.argv[1])))", runDir], { cwd: root, encoding: 'utf8', windowsHide: true }));
+    assert.equal(report.technicalPassed, true, JSON.stringify(report.checks));
+    assert.equal(state.summary.gameOutcome, variant === 'approach-pass' ? 'passed' : 'unverified');
+    p3Reports.push({ scenario: `direct-${variant}`, summary: state.summary, audit: report });
+  }
+  await page.getByRole('combobox', { name: 'P3 执行路径' }).selectOption('agent');
   scenario = 'approach-stall'; trackingRequests = 0; await run();
   await expect.poll(() => trackingRequests, { timeout: 15000 }).toBe(1);
   await page.getByRole('button', { name: '■ 取消运行', exact: true }).click();

@@ -135,11 +135,11 @@ npm run test:p3-agent
 npm run test:p3-ui
 ```
 
-另在 `D:\work\GamePilot-p1` 执行 `npm test`，当前 11 项回归（原 8 项，加空回复、仅推理回复和显式思考开关）。
+另执行 `npm test --prefix runtime/p1`，当前 11 项回归（原 8 项，加空回复、仅推理回复和显式思考开关）。
 
 Electron UI 测试使用仅监听 127.0.0.1 的模拟模型端点和真实 Pi Runtime；不调用你的远程 API。默认生成测试图片，也可以用 GAMEPILOT_TEST_IMAGE 指定本地图片。截图输出到 artifacts，运行记录输出到 runs，均已忽略。
 
-自动检查覆盖 TypeScript、构建、41 项基础/证据/监督测试、10 项 Pi/手柄集成、10 项 Pi/Verifier 集成、4 项 Python 单测、11 项 P1 回归，以及 Electron 模型/输入 UI、P2-C/P2-D 联测与原生捕获取消。自动输入均为 dry-run，焦点联测用可控依赖，零真实动作；证据明确标为测试数据。空回复会显示具体原因及响应诊断。
+自动检查覆盖 TypeScript、构建、67 项基础/证据/监督/Runner/实验测试、10 项 Pi/手柄集成、10 项 Pi/Verifier 集成、4 项 Python 单测、11 项 P1 回归，以及 Electron 模型/输入 UI、P2-C/P2-D 联测与原生捕获取消。自动输入均为 dry-run，焦点联测用可控依赖，零真实动作；证据明确标为测试数据。空回复会显示具体原因及响应诊断。
 
 原生窗口捕获集成测试覆盖枚举、实时画面、源帧屏障、截图冻结、模型收到同一图片、模拟工具闭环、缩放/标题、最小化/恢复/关闭、零预览上传。截图见 artifacts/p2a-capture-desktop.png；该测试窗口明确标为“非游戏”。
 
@@ -156,7 +156,10 @@ src/contracts/    输入、事件与状态契约
 src/agent/        现有 P1 Runtime 的复用边界
 src/capture/      Win32 状态、持续窗口流、新帧屏障和 Observation
 src/input/        Python 通信、租约、原子技能与手动调试控制
-src/runtime/      固定目标、预算、安全与完成检查
+src/runtime/      Runner、跨技能预算、真实执行服务、安全与完成检查
+src/experiments/  冻结任务配置、起点、重复试次、基线标签与统计
+src/skills/       有界反馈技能，只返回执行与到达候选
+src/state/        独立目标定位与状态有效期
 src/verification/ 新帧证据检查与独立视觉 Verifier
 python/           输入服务、看门狗与测试
 src/renderer/     图片、Transcript、工具与任务输入
@@ -193,3 +196,7 @@ P2-B、P2-C 基本实机链路及 P2-D 首个只读目标验证已由用户确�
 启动脚本会隐藏读取 API Key；密钥不应写入 Git。运行日志、截图、配置 local.json、node_modules 与 dist 均不提交。
 
 当前里程碑：P3/P4 功能已实现，P3 已有出现“A 调查”提示的实机续程成功样例；固定起点重复实验与 P4 正式实机验收仍待完成。自动测试和模拟联测不代表完整实机验收。
+
+## 架构演进计划
+
+[模块职责与解耦实施方案](docs/module-boundaries-and-refactor.md)的七步软件迁移已完成。P3 可在“执行路径”中选择直接技能或 Agent，两者使用相同的 Runner、独立逐项 Verifier 和跨调用总预算。技能到达候选不会直接产生任务成功；运行状态、任务结论及停止原因分别保存和展示。新 P3 记录使用 schemaVersion=3，旧记录仍可审计。详见 [实施与验证记录](docs/module-refactor-report.md)，P3/P4 正式实机验收仍待完成。

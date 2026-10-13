@@ -10,6 +10,8 @@ import type { ValidationOptions } from '../agent/validation-runtime';
 import { redact } from './model-config';
 import type { GoalSpec, KeyObservation, ReleaseEvidence } from '../contracts/verification';
 import { checkEvidence } from '../verification/evidence';
+import { freezeTask } from '../contracts/run';
+import { validTaskVerification } from '../verification/task-result';
 
 export interface RunTrace { saveObservation(image: ImportedImage, bytes: Buffer, release: ReleaseEvidence): Promise<void> }
 export type Runner = (options: ValidationOptions, replaceInput: (image: ImportedImage, bytes: Buffer) => Promise<void>, trace: RunTrace) => Promise<RunSummary>;
@@ -33,8 +35,9 @@ export class DebugSession {
   get controlsInput() { return this.active?.simulated === false; }
   runDirectory(id: string) { return this.current?.runId === id ? this.knownRuns.get(id) : undefined; }
   async start(image: ImportedImage, bytes: Buffer, prompt: string, timeoutMs: number, config: ModelConfig,
-    execution?: { simulated: boolean; runner: Runner; goal?: GoalSpec; benchmark?: Assignment; experiment?: { kind: 'p3-approach'; spec: ApproachSpec; limits: object }; pausable?: boolean; metrics?: () => RunSummary['metrics'] }) {
+    execution?: { simulated: boolean; runner: Runner; goal?: GoalSpec; benchmark?: Assignment; experiment?: { kind: 'p3-approach'; spec: ApproachSpec; limits: object; strategy?: import('../contracts/run').ExecutionStrategy }; pausable?: boolean; metrics?: () => RunSummary['metrics'] }) {
     if (this.busy) throw new Error('已有运行正在进行');
+    if (execution?.goal) execution = { ...execution, goal: freezeTask(execution.goal) };
     // Reserve the slot before asynchronous disk setup so concurrent IPC calls cannot both start.
     const controller = new AbortController();
     let finish!: () => void;
@@ -44,11 +47,13 @@ export class DebugSession {
     const simulated = execution?.simulated ?? true;
     const observations: KeyObservation[] = [];
     let fixedInput = image;
-    const saveManifest = async () => writeFile(resolve(dir, 'manifest.json'), JSON.stringify(redact({ schemaVersion: execution?.goal ? 2 : 1, runId, startedAt, timeoutMs,
+    const saveManifest = async () => writeFile(resolve(dir, 'manifest.json'), JSON.stringify(redact({ schemaVersion: execution?.experiment?.strategy ? 3 : execution?.goal ? 2 : 1, runId, startedAt, timeoutMs,
       input: { id: fixedInput.id, name: fixedInput.name, importedAt: fixedInput.importedAt, width: fixedInput.width, height: fixedInput.height, source: fixedInput.source || 'import', capturedAt: fixedInput.evidence?.capturedAt ?? null, evidence: fixedInput.evidence },
-      prompt: redact(prompt, [config.apiKey]), goal: execution?.goal, observations: observations.map(record => ({ observationId: record.image.id, phase: record.phase, path: record.relativePath, evidence: record.image.evidence, release: record.release })),
+      prompt: redact(prompt, [config.apiKey]), goal: execution?.goal, task: execution?.experiment?.strategy ? execution?.goal : undefined,
+      executionStrategy: execution?.experiment?.strategy,
+      observations: observations.map(record => ({ observationId: record.image.id, phase: record.phase, path: record.relativePath, evidence: record.image.evidence, release: record.release })),
       benchmark: execution?.benchmark, experiment: execution?.experiment, provider: config.provider, modelId: config.modelId, endpoint: config.baseUrl, simulated,
-      piCommit: '4270522473e677ddba7b093caa0064a3df51d459', runtime: 'runtime/p1/src/runtime.mjs',
+      piCommit: '4270522473e677ddba7b093caa0064a3df51d459', runtime: execution?.experiment?.strategy === 'direct' ? 'src/runtime/approach-runner.ts' : 'runtime/p1/src/runtime.mjs',
     }, [config.apiKey]), null, 2));
     const saveObservation = async (snapshot: ImportedImage, data: Buffer, phase: 'before' | 'after', release?: ReleaseEvidence) => {
       if (!execution?.goal) return;
@@ -119,7 +124,7 @@ export class DebugSession {
           finalText: '', error: error instanceof Error ? error.message : 'Runtime 意外退出' };
       }
       finally { clearTimeout(timer); }
-      summary = { ...summary, ...(execution?.metrics ? { metrics: execution.metrics() } : {}), turns: Math.max(summary.turns, 0, ...this.current!.events.map(e => e.turn ?? 0)), completedTools: this.current!.events.filter(e => e.type === 'tool_execution_end' && e.isError === false).length, toolErrors: this.current!.events.filter(e => e.type === 'tool_execution_end' && e.isError === true).length };
+      summary = { ...summary, ...(execution?.metrics ? { metrics: execution.metrics() } : {}), turns: Math.max(summary.turns, 0, ...this.current!.events.map(e => e.turn ?? 0)), completedTools: this.current!.events.filter(e => ['tool_execution_end', 'skill_execution_end'].includes(e.type) && e.isError === false).length, toolErrors: this.current!.events.filter(e => ['tool_execution_end', 'skill_execution_end'].includes(e.type) && e.isError === true).length };
       await queue;
       const completion = (value: RunSummary): RunSummary => {
         if (!execution?.goal || value.status !== 'succeeded') return value;
@@ -129,18 +134,34 @@ export class DebugSession {
           || !before || after?.phase !== 'after' || !after.release || result.releaseId !== after.release.id
           || !result.evidenceIds.includes(before.image.id) || !result.evidenceIds.includes(after.image.id)
           || checkEvidence(before.image, after.image, after.release)) return { ...value, status: 'blocked', gameOutcome: 'inconclusive', error: '完成声明缺少可核对的独立验证与关键帧证据' };
+        if (value.runResult) {
+          const observed = value.runResult.execution?.observations.at(-1);
+          const release = [...this.current!.events].reverse().find(e => e.type === 'input_released');
+          if (!validTaskVerification(result, freezeTask(execution.goal), before.image.id, after.image.id, after.release.id)
+            || !observed || observed.id !== after.image.id || performance.now() > observed.validUntil
+            || (release?.result as { neutral?: boolean })?.neutral !== true) return { ...value, status: 'blocked', error: '结束检查未通过：证据过期或归零未确认' };
+        }
         return value;
       };
-      const normalize = (value: RunSummary): RunSummary => logError ? { ...value, status: 'failed', gameOutcome: 'unverified', error: logError }
-        : timedOut && value.status !== 'failed' ? { ...value, status: 'timed_out', gameOutcome: 'unverified' }
-        : controller.signal.aborted && ['protocol_passed', 'control_passed', 'succeeded', 'blocked'].includes(value.status) ? { ...value, status: 'canceled', gameOutcome: 'unverified' } : completion(value);
+      const normalize = (value: RunSummary): RunSummary => {
+        const outcome = value.runResult ? value.gameOutcome : 'unverified';
+        let result = logError ? { ...value, status: 'failed' as const, gameOutcome: outcome, error: logError }
+          : timedOut && value.status !== 'failed' ? { ...value, status: 'timed_out' as const, gameOutcome: outcome }
+          : controller.signal.aborted && value.status !== 'failed' ? { ...value, status: 'canceled' as const, gameOutcome: outcome } : completion(value);
+        if (result.runResult) result = { ...result, runResult: { ...result.runResult, status: result.status, taskOutcome: result.gameOutcome,
+          stopReason: result.status !== value.status ? logError ? 'trace-error' : timedOut ? 'timeout' : controller.signal.aborted ? 'canceled' : 'completion-rejected' : result.runResult.stopReason } };
+        return result;
+      };
       summary = normalize(summary);
       summary = redact(summary, [config.apiKey]);
+      const recordFailure = (value: RunSummary): RunSummary => ({ ...value, status: 'failed',
+        gameOutcome: value.runResult ? value.gameOutcome : 'unverified', error: '运行摘要写入失败',
+        ...(value.runResult ? { runResult: { ...value.runResult, status: 'failed', stopReason: 'trace-error' } } : {}) });
       try { await writeFile(resolve(dir, 'summary.json'), JSON.stringify(summary, null, 2)); }
-      catch { summary = { ...summary, status: 'failed', gameOutcome: 'unverified', error: '运行摘要写入失败' }; }
+      catch { summary = recordFailure(summary); }
       const savedStatus = summary.status;
       summary = normalize(summary);
-      if (summary.status !== savedStatus) await writeFile(resolve(dir, 'summary.json'), JSON.stringify(summary, null, 2)).catch(() => { summary = { ...summary, status: 'failed', gameOutcome: 'unverified', error: '运行摘要写入失败' }; });
+      if (summary.status !== savedStatus) await writeFile(resolve(dir, 'summary.json'), JSON.stringify(summary, null, 2)).catch(() => { summary = recordFailure(summary); });
       emit({ timestamp: Date.now(), type: 'validation_end', status: summary.status, summary });
       await queue;
       const settled = normalize(summary);

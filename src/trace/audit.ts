@@ -5,9 +5,11 @@ import type { FrameEvidence } from '../contracts/capture';
 import type { GoalSpec, ReleaseEvidence } from '../contracts/verification';
 import { acceptanceCases, type AcceptanceCaseId } from '../contracts/acceptance';
 import { checkEvidence, parseVerdict } from '../verification/evidence';
+import { freezeTask, type TaskSpec } from '../contracts/run';
+import { validTaskVerification } from '../verification/task-result';
 
 interface SavedObservation { observationId: string; phase: 'before' | 'after'; path: string; evidence: FrameEvidence; release?: ReleaseEvidence }
-interface Manifest { schemaVersion: number; runId: string; simulated: boolean; input: { id: string; source: string }; goal: GoalSpec; observations: SavedObservation[]; endpoint: string }
+interface Manifest { schemaVersion: number; runId: string; simulated: boolean; input: { id: string; source: string }; goal: GoalSpec; task?: TaskSpec; executionStrategy?: string; observations: SavedObservation[]; endpoint: string }
 export interface AuditReport {
   schemaVersion: 1; runId?: string; caseId?: AcceptanceCaseId; technicalPassed: boolean;
   humanReview: 'required'; physicalInputVerified: null; testData: boolean;
@@ -32,7 +34,11 @@ export async function auditRun(directory: string, caseId?: AcceptanceCaseId): Pr
     try { localEndpoint = ['localhost', '127.0.0.1', '[::1]'].includes(new URL(manifest.endpoint).hostname); } catch { check('模型端点格式有效', false); }
     report.testData = localEndpoint || await stat(resolve(root, 'test-context.json')).then(() => true, () => false)
       || manifest.observations?.some(o => /非游戏|测试窗口/.test(o.evidence?.title ?? '')) || manifest.simulated === true;
-    check('schemaVersion=2，固定目标和窗口输入', manifest.schemaVersion === 2 && manifest.goal?.id && manifest.goal.successCondition?.trim() && manifest.input?.source === 'window');
+    const modern = manifest.schemaVersion === 3;
+    check('支持的证据版本、固定目标和窗口输入', [2, 3].includes(manifest.schemaVersion) && manifest.goal?.id && manifest.goal.successCondition?.trim() && manifest.input?.source === 'window');
+    if (modern) check('任务、执行路径与运行结果契约一致', manifest.task && JSON.stringify(manifest.task) === JSON.stringify(manifest.goal)
+      && ['direct', 'agent'].includes(manifest.executionStrategy!) && summary.runResult?.strategy === manifest.executionStrategy
+      && summary.runResult?.status === summary.status && summary.runResult?.taskOutcome === summary.gameOutcome);
     check('模拟标志在 manifest/summary 一致', typeof manifest.simulated === 'boolean' && manifest.simulated === summary.simulated);
     check('事件 runId、时间戳及递增 sequence 完整', events.length > 0 && events.every((e, i) => e.runId === manifest.runId && e.sequence === i + 1 && Number.isFinite(e.timestamp)));
     const completion = events.at(-1);
@@ -75,19 +81,30 @@ export async function auditRun(directory: string, caseId?: AcceptanceCaseId): Pr
       // Evidence-check failures legitimately may have no after frame. A conclusive VLM result cannot.
       check(`验证事件 ${event.sequence} 固定目标及证据引用`, v?.goalId === manifest.goal.id
         && (v.method === 'evidence-check' && v.verdict === 'inconclusive' || (after && v.evidenceIds.includes(records[0].observationId) && v.evidenceIds.includes(after.observationId))));
+      if (modern) check(`验证事件 ${event.sequence} 逐项标准与任务身份一致`, v && after
+        && v.evidenceIds.every(id => records.some(o => o.observationId === id))
+        && validTaskVerification(v, freezeTask(manifest.task!), records[0].observationId, after.observationId, after.release!.id));
     }
     const latest = [...events].reverse().find(e => e.type === 'verification_end')?.verification;
     if (summary.verification) check('summary 引用最新验证结果', JSON.stringify(summary.verification) === JSON.stringify(latest));
     if (summary.status === 'succeeded' || summary.gameOutcome === 'passed') {
       const after = records.at(-1);
-      check('完成有独立 passed 与最终关键帧引用', summary.status === 'succeeded' && summary.gameOutcome === 'passed'
+      check('完成结论有独立 passed 与最终关键帧引用', (modern || summary.status === 'succeeded') && summary.gameOutcome === 'passed'
         && summary.verification?.id === latest?.id
         && latest?.verdict === 'passed' && latest.method === 'vlm' && latest.goalId === manifest.goal.id
         && after?.phase === 'after' && latest.releaseId === after.release?.id && latest.evidenceIds.includes(after.observationId)
         && latest.facts.length > 0);
+      if (modern) {
+        const result = summary.runResult!, observed = result.execution?.observations.at(-1);
+        check('完成或历史结论有明确观察时点', observed && latest?.observedAt === observed.observedAt && latest.observationId === observed.id
+          && result.clock === 'main-monotonic' && Number.isFinite(result.finishedAt));
+        check('成功结束仍需有效期检查；取消和故障只保留历史结论', summary.status === 'succeeded'
+          ? observed && result.finishedAt! >= observed.observedAt && result.finishedAt! <= observed.validUntil && result.stopReason === 'verified'
+          : ['canceled', 'timeout', 'stale-verification', 'release-unconfirmed', 'trace-error', 'completion-rejected'].includes(result.stopReason));
+      }
     }
-    if (['canceled', 'timed_out', 'failed'].includes(summary.status)) check('中止/故障不接受目标成功', summary.gameOutcome === 'unverified');
-    if (summary.status === 'blocked') check('受阻不误报通过且结论匹配最新验证', summary.gameOutcome !== 'passed'
+    if (['canceled', 'timed_out', 'failed'].includes(summary.status)) check('中止/故障不接受运行成功', modern ? summary.runResult?.status !== 'succeeded' : summary.gameOutcome === 'unverified');
+    if (summary.status === 'blocked') check('受阻的任务结论匹配最新验证', (modern || summary.gameOutcome !== 'passed')
       && (!latest || summary.gameOutcome === latest.verdict));
     const tools = events.filter(e => e.type === 'tool_execution_start');
     const moves = tools.filter(e => e.toolName === 'move_for');

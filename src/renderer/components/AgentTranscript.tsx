@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import type { AgentEvent, RunStatus } from '../../contracts/debug';
 import ToolCallItem from './ToolCallItem';
+import ApproachProgress from './ApproachProgress';
+import VerificationItem from './VerificationItem';
 export const statusLabel: Record<RunStatus, string> = { pausing: '正在暂停', paused: '已暂停', idle: '等待任务', running: '运行中', canceling: '正在取消', protocol_passed: '模拟链路通过', control_passed: '真实输入链路通过', succeeded: '目标验证通过', blocked: '任务受阻 / 未通过验证', failed: '运行失败', canceled: '已取消', timed_out: '请求超时', budget_exceeded: '预算耗尽', incomplete: '链路未完成' };
 export default function AgentTranscript({ events, status, phase }: { events: AgentEvent[]; status: RunStatus; phase: string }) {
   const viewport = useRef<HTMLDivElement>(null), follow = useRef(true);
@@ -22,13 +24,24 @@ export default function AgentTranscript({ events, status, phase }: { events: Age
   const final = [...events].reverse().find(e => e.type === 'validation_end');
   const observation = events.find(e => e.type === 'observation');
   const real = events.some(e => e.simulated === false);
+  const traceRows = events.filter(e => ['observation_post', 'approach_decision', 'skill_released', 'verification_start', 'verification_end', 'runner_end', 'input_interrupted'].includes(e.type));
+  const stageName = (type: string) => type === 'observation_post' ? 'OBSERVE' : type === 'approach_decision' ? 'DECIDE' : type === 'skill_released' ? 'ACT' : type.startsWith('verification_') ? 'VERIFY' : 'RUNNER';
   return <div className="transcript-wrap">
+    <div className="trace-metrics" aria-label="Trace 概览"><span>决策轮次 <b>{turns.length}</b></span><span>动作回执 <b>{events.filter(e => e.type === 'skill_released').length}</b></span><span>验证结果 <b>{events.filter(e => e.type === 'verification_end').length}</b></span></div>
     <div className="transcript" ref={viewport} aria-label="Agent 执行记录" onScroll={() => {
       const el = viewport.current!; follow.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
       if (follow.current) setUnread(false);
     }}>
-      {!events.length ? <div className="transcript-empty"><span className="terminal-mark">❯_</span><h3>每一步，都看得见</h3>
-        <p>模型反馈、工具参数与执行结果<br />将按决策轮次出现在这里。</p><div className="legend"><span>● 模型反馈</span><span>● 工具调用</span><span>● 执行结果</span></div></div> : <>
+      {!events.length ? <div className="transcript-empty"><span className="terminal-mark">❯_</span><h3>等待第一条 Trace</h3>
+        <p>运行任务后，观察、决策、动作与验证将在这里更新。<br />直接执行路径同样记录，任务参数在下方配置。</p><div className="legend"><span>● 模型反馈</span><span>● 工具调用</span><span>● 执行结果</span></div></div> : <>
+        {traceRows.length > 0 && <section className="trace-timeline" aria-label="运行时间线">
+          <div className="trace-section-title">执行时间线 <span>{traceRows.length} 条事件</span></div>
+          {traceRows.map(e => <details className="trace-event" key={e.sequence}>
+            <summary><span className={`trace-kind trace-${stageName(e.type).toLowerCase()}`}>{stageName(e.type)}</span><span className="trace-event-text">{e.type === 'verification_end' ? `${e.verification?.method === 'vlm' ? '独立视觉验证' : '证据检查'} · ${e.verification?.verdict ?? '未知'}` : e.text || e.type}</span><time>{new Date(e.timestamp).toLocaleTimeString()}</time></summary>
+            {e.observationId && <p>观察帧 {e.observationId}</p>}
+            <pre className="json-block">{JSON.stringify(e.verification ?? e.result ?? e.release ?? { type: e.type, text: e.text }, null, 2)}</pre>
+          </details>)}
+        </section>}
         {user && <div className="user-message"><div className="event-label"><span>❯</span> USER <time>{new Date(user.timestamp).toLocaleTimeString()}</time></div><p>{user.text}</p></div>}
         {events.filter(e => e.type === 'input_preparing').map(e => <div className="observation-row" key={e.sequence}>{e.text}</div>)}
         <div className="observation-row"><span>◉</span> {real && !observation ? '等待准备完成后截图' : '已固定本次图片输入'} <span className="muted">{observation?.evidence ? `· 窗口源帧 #${observation.evidence.frameSequence} · 屏障后新帧` : real ? '' : '· 手动导入，采集时间未知'}</span></div>
@@ -50,8 +63,15 @@ export default function AgentTranscript({ events, status, phase }: { events: Age
           </section>;
         })}
         {events.filter(e => e.type === 'input_interrupted' || e.type === 'input_released' || e.type.startsWith('task_')).map(e => <div className="observation-row" key={e.sequence}>{e.text}</div>)}
+        {events.some(e => e.type === 'skill_execution_start') && <section aria-label="直接技能执行记录">
+          <div className="turn-label">DIRECT · 技能执行</div>
+          <ApproachProgress events={events} /><VerificationItem events={events} ended={completed} />
+        </section>}
         {final && <div className={`run-end ${status === 'failed' || status === 'timed_out' ? 'error-color' : ''}`}><span>■ {statusLabel[status]}</span>
-          <span>{final.summary?.gameOutcome === 'passed' && status === 'succeeded' ? '固定条件已通过独立 VLM 验证' : final.summary?.gameOutcome === 'failed' ? '固定目标未达到' : final.summary?.gameOutcome === 'inconclusive' ? '无法确认目标，未判成功' : '游戏效果未经验证'}</span>{final.summary?.error && <div className="error-row"><span>{final.summary.error}</span><button onClick={() => copy(final.summary!.error!)}>复制详情</button></div>}</div>}
+          <span>{final.summary?.gameOutcome === 'passed' ? '固定条件在引用观察时点通过独立验证' : final.summary?.gameOutcome === 'failed' ? '固定目标未达到' : final.summary?.gameOutcome === 'inconclusive' ? '无法确认目标，未判成功' : '游戏效果未经验证'}</span>
+          {final.summary?.runResult && <span>停止原因：{final.summary.runResult.stopReason} · 执行路径：{final.summary.runResult.strategy === 'direct' ? '直接技能' : 'Agent'}{final.summary.verification?.observationId ? ` · 验证帧 ${final.summary.verification.observationId.slice(0, 8)}` : ''}</span>}
+          {final.summary?.runResult?.agentSummaryError && <p>Agent 总结异常：{final.summary.runResult.agentSummaryError}</p>}
+          {final.summary?.error && <div className="error-row"><span>{final.summary.error}</span><button onClick={() => copy(final.summary!.error!)}>复制详情</button></div>}</div>}
         {!completed && <div className="active-stage"><span className="activity-dot" />{phase}</div>}
       </>}
     </div>

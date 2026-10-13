@@ -6,8 +6,8 @@ import { visionModel, shouldDisableThinking } from './model.mjs';
 
 // Default remains P1 simulation. Device access is injected by the host, never owned here.
 export async function validate({ baseUrl, apiKey, modelId, image, prompt, signal,
-  timeoutMs = 30000, maxTurns = 4, failTool = false, thinkingMode, movement, verifiedTools, approachTools, onEvent = () => {} }) {
-  const simulated = !movement && !verifiedTools && !approachTools;
+  timeoutMs = 30000, maxTurns = 4, failTool = false, thinkingMode, movement, verifiedTools, toolRegistry, onEvent = () => {} }) {
+  const simulated = !movement && !verifiedTools && !toolRegistry;
   let sequence = 0, turn = 0, completedTools = 0, toolErrors = 0, aborted = false, toolCalls = 0;
   let lastVerifiedToolTurn = 0;
   let finalResponseReceived = false;
@@ -45,16 +45,13 @@ export async function validate({ baseUrl, apiKey, modelId, image, prompt, signal
         details: { simulated: true, gameOutcome: 'unverified' } };
     },
   };
-  const tools = approachTools ? [{
-    name: 'approach_target', label: 'Experimental visual target approach',
-    description: 'Run ONE host-owned feedback skill for the fixed target, using fresh frames between short movements. Stops on lost/uncertain/stale target or budget. Parameters cannot change the target, region or control limits.',
-    parameters: Type.Object({ targetId: Type.Literal(approachTools.targetId), observationId: Type.Literal(approachTools.observationId) }, { additionalProperties: false }),
+  const tools = toolRegistry ? toolRegistry.tools.map(registered => ({ ...registered, parameters: Type.Unsafe(registered.parameters),
     async execute(id, args, abortSignal) {
-      const result = await approachTools.execute(args, abortSignal, id);
-      if (signal?.aborted || abortSignal?.aborted) throw new Error('Approach canceled');
+      const result = await registered.execute(args, abortSignal, id);
+      if (signal?.aborted || abortSignal?.aborted) throw new Error('Registered tool canceled');
       completedTools++; return result;
     },
-  }] : [tool];
+  })) : [tool];
   if (verifiedTools) tools.push({ name: 'wait_for_state', label: 'Wait for fixed visible goal',
     description: 'Read-only poll of the FIXED success condition. Does not change the goal or send gamepad input. At most one call, three observations, 500–10000ms waiting budget. Returns fresh evidence and passed/failed/inconclusive.',
     parameters: Type.Object({ timeoutMs: Type.Integer({ minimum: 500, maximum: 10000 }) }, { additionalProperties: false }),
@@ -66,8 +63,8 @@ export async function validate({ baseUrl, apiKey, modelId, image, prompt, signal
   });
   const agent = new Agent({
     initialState: {
-      systemPrompt: approachTools
-        ? `You are GamePilot P3 experimental visual planner. The only available tool is approach_target, once per task. Fixed targetId=${JSON.stringify(approachTools.targetId)}, observationId=${JSON.stringify(approachTools.observationId)}. Fixed visible goal: ${JSON.stringify(approachTools.goal)}. Do not change the target or success criterion. Inspect the screenshot; only call the skill in a clear controllable gameplay scene. The host handles short movements and feedback internally, with real Xbox input. Do not request a second attempt or claim real-world distance. After the result, summarize its independent verification and stop. Do not expose private reasoning.`
+      systemPrompt: toolRegistry
+        ? toolRegistry.systemPrompt
         : verifiedTools
         ? `You are GamePilot P2-D, a visual game planner. Fixed success condition: ${JSON.stringify(verifiedTools.goal)}. Never change it. Describe only visible facts, do not reveal private reasoning, and do not move in menus/unknown scenes. Tools operate a REAL virtual Xbox. Exactly at most ONE game tool call per assistant turn: never batch tools; wait for fresh evidence before deciding again. At most two move_for calls and one wait_for_state; at most three tool calls total. Each tool returns independent verification and a fresh screenshot. If failed, use the fresh evidence for at most one corrective move or a read-only wait. If inconclusive, do not move blindly; a read-only wait may acquire better evidence. If passed, stop calling tools and summarize the VLM verdict without claiming calibrated or infallible proof. Input executed does NOT mean the goal passed. Only the RuntimeSupervisor can accept completion. If budgets are exhausted or evidence insufficient, explain blocked status.`
         : simulated
@@ -86,9 +83,9 @@ export async function validate({ baseUrl, apiKey, modelId, image, prompt, signal
     toolExecution: 'sequential',
     beforeToolCall: ({ toolCall }) => {
       toolCalls++;
-      const rejection = verifiedTools && lastVerifiedToolTurn === turn ? '每轮仅允许一个游戏工具，必须基于新截图重新决策' : verifiedTools?.allow(toolCall.name) ?? approachTools?.allow(toolCall.name);
-      if (verifiedTools) lastVerifiedToolTurn = turn;
-      if (toolCalls > (verifiedTools ? 3 : simulated ? 4 : 1) || rejection) limitReached = true;
+      const rejection = (verifiedTools || toolRegistry) && lastVerifiedToolTurn === turn ? '每轮仅允许一个游戏工具，必须基于新截图重新决策' : verifiedTools?.allow(toolCall.name) ?? toolRegistry?.allow(toolCall.name);
+      if (verifiedTools || toolRegistry) lastVerifiedToolTurn = turn;
+      if (toolCalls > (toolRegistry ? toolRegistry.maxCalls : verifiedTools ? 3 : simulated ? 4 : 1) || rejection) limitReached = true;
       return signal?.aborted || timedOut || limitReached
         ? { block: true, reason: rejection || 'Validation stopped or call budget exhausted', terminate: true } : undefined;
     },

@@ -18,12 +18,22 @@ export async function auditApproach(directory: string) {
     check('独立 P3 配置与固定控制上限', manifest.experiment?.kind === 'p3-approach' && JSON.stringify(manifest.experiment.limits) === JSON.stringify(limits)
       && manifest.experiment.spec.targetId === spec.targetId && !manifest.benchmark);
     const stats = summary.approach as ApproachStats;
-    stopReason = stats.stopReason;
-    check('技能调用、动作和观测均在固定预算内', stats.calls === 1 && Number.isInteger(stats.steps) && stats.steps >= 0 && stats.steps <= limits.maxSteps
+    const modern = manifest.schemaVersion === 3;
+    stopReason = summary.runResult?.stopReason ?? stats.stopReason;
+    check('技能调用、动作和观测均在固定预算内', (modern ? Number.isInteger(stats.calls) && stats.calls >= 1 && stats.calls <= limits.maxObservations / limits.stableFrames : stats.calls === 1) && Number.isInteger(stats.steps) && stats.steps >= 0 && stats.steps <= limits.maxSteps
       && Number.isInteger(stats.executedSteps) && stats.executedSteps >= 0 && stats.executedSteps <= stats.steps
       && stats.observations <= limits.maxObservations && stats.trackingCalls <= stats.observations);
-    const tools = events.filter(e => e.type === 'tool_execution_start');
-    check('模型只有一次固定目标技能调用', tools.length === 1 && tools[0].toolName === 'approach_target' && tools[0].args?.targetId === spec.targetId && tools[0].args?.observationId === manifest.input.id);
+    const tools = events.filter(e => ['tool_execution_start', 'skill_execution_start'].includes(e.type));
+    check('执行路径只调用固定目标技能并引用最新观察', tools.length === stats.calls && tools.every((tool, index) => {
+      const observed = [...events].reverse().find(e => e.type === 'observation_post' && e.sequence < tool.sequence)?.observationId ?? manifest.input.id;
+      return tool.toolName === 'approach_target' && tool.args?.targetId === spec.targetId && tool.args?.observationId === (index ? observed : manifest.input.id)
+        && (!modern || tool.type === (manifest.executionStrategy === 'direct' ? 'skill_execution_start' : 'tool_execution_start'));
+    }));
+    if (modern) check('Runner 预算跨调用累计，动作与观测上限未放宽', summary.runResult?.budget
+      && summary.runResult.budget.steps === stats.steps && summary.runResult.budget.steps <= limits.maxSteps
+      && summary.runResult.budget.observations >= stats.observations && summary.runResult.budget.observations <= limits.maxObservations
+      && summary.runResult.budget.elapsedMs >= 0
+      && manifest.executionStrategy === manifest.experiment.strategy);
     const states = events.filter(e => e.type === 'tracking_state');
     check('状态版本递增且引用实际保存的新帧', states.every((event, index) => {
       const s = event.result as TargetState;
@@ -51,14 +61,14 @@ export async function auditApproach(directory: string) {
     }
     const released = events.filter(e => e.type === 'skill_released');
     check('实际发送、执行归零与摘要一致', sends.length <= stats.steps && released.length === stats.executedSteps && stats.executedSteps <= sends.length && sends.length <= limits.maxSteps && stats.corrections === feedbackCorrections);
-    const end = [...events].reverse().find(e => e.type === 'approach_end');
+    const end = [...events].reverse().find(e => e.type === (modern ? 'runner_execution' : 'approach_end'));
     check('反馈结果与 summary 一致', end && JSON.stringify(end.result) === JSON.stringify(stats));
     if (summary.status === 'succeeded') {
       const holds = events.filter(e => e.type === 'approach_decision').slice(-limits.stableFrames);
       const finalStates = holds.map(e => states.find(s => s.observationId === e.observationId)?.result as TargetState | undefined);
       check('成功前有连续保持帧与独立 VLM 通过', holds.length === limits.stableFrames && holds.every(e => (e.result as { decision: string }).decision === 'hold')
         && finalStates.every((s, index) => s && approachDecision(s, spec) === 'hold' && !stateRejection(s, spec, s.observationId, s.observedAt + (holds[index].result as { ageMs: number }).ageMs))
-        && finalStates[1]!.observedAt - finalStates[0]!.observedAt >= limits.stableMs && stopReason === 'arrived'
+        && finalStates[1]!.observedAt - finalStates[0]!.observedAt >= limits.stableMs && stopReason === (modern ? 'verified' : 'arrived')
         && summary.verification?.method === 'vlm' && summary.verification.verdict === 'passed');
     }
   } catch { check('P3 结构完整，缺失或损坏不能推定通过', false); }

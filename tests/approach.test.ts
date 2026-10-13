@@ -3,14 +3,13 @@ import assert from 'node:assert/strict';
 import { ApproachTarget, type ApproachDependencies } from '../src/skills/approach-target';
 import { TargetEstimator, parseDetection } from '../src/state/target-estimator';
 import { normalizeApproach, type Box, type TargetDetection } from '../src/contracts/approach';
-import type { AgentEvent, ImportedImage, RunSummary } from '../src/contracts/debug';
+import type { AgentEvent, ImportedImage } from '../src/contracts/debug';
 
 export const image = (n: number): ImportedImage => ({ id: `f-${n}`, name: 'fixture', path: '', importedAt: 1, mimeType: 'image/png', width: 1, height: 1, size: 1, dataUrl: 'data:image/png;base64,eA==', source: 'window', evidence: {
   sourceId: 'window:1:0', title: 'fixture', identity: 'same', generation: 1, frameSequence: n, sourceMediaTime: n, presentedFrames: n,
   barrierMediaTime: n - .1, barrierPresentedFrames: n - 1, barrierRequestedAt: n * 100, capturedAt: n * 100 + 1, receivedAt: n * 100 + 2, clock: 'video-media-time', freshness: 'after-source-barrier' } });
 const spec = normalizeApproach({ description: 'unique pillar', region: [.35,.2,.3,.65], minArea: .06 });
 export const detection = (box: Box = [.375,.3,.25,.3]): TargetDetection => ({ mode: 'gameplay', visible: true, sameTarget: true, sceneStable: true, pathClear: true, box, confidence: .95, facts: ['same unique pillar'] });
-const base: RunSummary = { status: 'control_passed', simulated: false, gameOutcome: 'unverified', turns: 2, completedTools: 1, toolErrors: 0, finalText: 'done' };
 function setup(boxes: TargetDetection[] = [detection([.15,.3,.1,.2]), detection([.4,.3,.2,.2]), detection(), detection()], requireInteraction = false) {
   const parent = new AbortController(), events: Partial<AgentEvent>[] = [], moves: string[] = [];
   let clock = 0, frame = 1, calls = 0, stops = 0, saves = 0;
@@ -20,18 +19,18 @@ function setup(boxes: TargetDetection[] = [detection([.15,.3,.1,.2]), detection(
     neutral: async () => receipt, stop: async () => { stops++; },
     capture: async () => { clock += 400; return image(++frame); }, save: async () => { saves++; },
     tracker: new TargetEstimator(async () => JSON.stringify(boxes[Math.min(calls++, boxes.length - 1)])),
-    verify: async request => ({ id: 'verdict', goalId: request.goal.id, releaseId: request.release.id, evidenceIds: [request.before.id, request.after.id], verdict: 'passed', method: 'vlm', summary: 'visible', facts: ['target in region'] }),
     emit: (type, fields) => events.push({ type, ...fields }), now: () => clock,
   };
-  const skill = new ApproachTarget({ ...spec, requireInteraction }, { id: 'goal', successCondition: 'fixed' }, image(1), parent.signal, deps);
-  return { skill, deps, parent, events, moves, advance: (ms: number) => { clock += ms; }, counts: () => ({ stops, saves }), run: () => skill.execute({ targetId: spec.targetId, observationId: 'f-1' }, undefined, 'tool') };
+  const skill = new ApproachTarget({ ...spec, requireInteraction }, image(1), parent.signal, deps);
+  let result: Awaited<ReturnType<ApproachTarget['execute']>>;
+  return { result: () => result, skill, deps, parent, events, moves, advance: (ms: number) => { clock += ms; }, counts: () => ({ stops, saves }), run: async () => { result = await skill.execute({ targetId: spec.targetId, observationId: 'f-1' }, undefined, 'tool'); return result; } };
 }
-test('feedback changes left to forward from new frames and requires stable target plus independent verification', async () => {
+test('feedback changes left to forward from new frames and reports a stable arrival candidate without final verification', async () => {
   const f = setup(); await f.run();
-  assert.deepEqual(f.moves, ['left', 'forward']); assert.equal(f.skill.finalize(base).status, 'succeeded');
+  assert.deepEqual(f.moves, ['left', 'forward']); assert.equal(f.result().arrivalCandidate, true);
   assert.equal(f.skill.stats.corrections, 1); assert.equal(f.skill.stats.trackingCalls, 4);
   assert.equal(f.events.filter(e => e.type === 'approach_input').length, 2);
-  assert.equal(f.events.filter(e => e.type === 'verification_start').length, 1);
+  assert.equal(f.events.filter(e => e.type === 'verification_start').length, 0);
   assert.equal(f.events.filter(e => e.type === 'tracking_state').at(-1)?.observationId, 'f-5');
 });
 for (const [name, override, reason] of [
@@ -43,7 +42,7 @@ for (const [name, override, reason] of [
   ['path', { pathClear: false }, 'path-unclear'],
 ] as const) test(`${name}: stops without input and does not reuse previous coordinates`, async () => {
   const f = setup([{ ...detection(), ...override } as TargetDetection]); await f.run();
-  assert.equal(f.moves.length, 0); assert.equal(f.skill.stats.stopReason, reason); assert.equal(f.skill.finalize(base).status, 'blocked');
+  assert.equal(f.moves.length, 0); assert.equal(f.skill.stats.stopReason, reason); assert.equal(f.result().status, 'blocked');
 });
 test('target loss after an executed step prevents every subsequent step', async () => {
   const f = setup([detection([.15,.3,.1,.2]), { ...detection(), visible: false, box: null }]); await f.run();
@@ -82,11 +81,7 @@ test('cancel during a tracker that ignores abort stops promptly, late result doe
   resolve(JSON.stringify(detection())); await new Promise(r => setImmediate(r));
   assert.equal(f.moves.length, 0); assert.equal(f.counts().stops, 1);
 });
-test('independent verifier failure or wrong evidence cannot become success', async () => {
-  const f = setup([detection(), detection()]);
-  f.deps.verify = async request => ({ id: 'v', goalId: 'wrong', releaseId: request.release.id, evidenceIds: ['f-1', request.after.id], verdict: 'passed', method: 'vlm', facts: ['x'], summary: 'x' });
-  await f.run(); assert.equal(f.skill.stats.stopReason, 'invalid-verification'); assert.equal(f.skill.finalize(base).status, 'blocked');
-});
+
 test('configuration and tracker JSON reject invalid geometry, extra fields and invented defaults', () => {
   assert.throws(() => normalizeApproach({ description: 'x', region: [.9,0,.2,.5], minArea: .1 }));
   assert.throws(() => normalizeApproach({ description: 'x', region: [0,0,.5,.5], minArea: .1, maxSteps: 999 }));
@@ -105,11 +100,7 @@ test('identity jump after a small step stops instead of chasing a new object', a
   const f = setup([detection([.1,.3,.1,.2]), detection([.8,.3,.1,.2])]); await f.run();
   assert.equal(f.skill.stats.stopReason, 'target-jump'); assert.equal(f.moves.length, 1);
 });
-test('completion evidence aging during final Planner response becomes inconclusive in the trace', async () => {
-  const f = setup([detection(), detection()]); await f.run(); f.advance(16000);
-  const result = f.skill.finalize(base); assert.equal(result.status, 'blocked'); assert.equal(result.verification?.verdict, 'inconclusive');
-  assert.equal(f.events.filter(e => e.type === 'verification_end').at(-1)?.verification?.id, result.verification?.id);
-});
+
 test('cancel during input awaits reset and cannot start a second feedback segment', async () => {
   const f = setup(); let enter!: () => void, release!: () => void, neutral = false;
   const entered = new Promise<void>(r => { enter = r; });
@@ -117,7 +108,7 @@ test('cancel during input awaits reset and cannot start a second feedback segmen
   f.deps.stop = async () => { await Promise.resolve(); neutral = true; release(); };
   const running = f.run(); await entered; f.parent.abort(); await assert.rejects(running, /取消/);
   assert.equal(neutral, true); assert.equal(f.skill.stats.steps, 1); assert.equal(f.skill.stats.executedSteps, 0);
-  assert.equal(f.skill.stats.trackingCalls, 1); assert.equal(f.skill.finalize(base).status, 'canceled');
+  assert.equal(f.skill.stats.trackingCalls, 1); assert.equal(f.skill.stats.stopReason, 'canceled');
 });
 
 test('invalid locator fields have actionable diagnostics and never dispatch movement', async () => {
@@ -135,8 +126,8 @@ test('invalid locator fields have actionable diagnostics and never dispatch move
     await f.run();
     assert.equal(f.moves.length, 0);
     assert.equal(f.skill.stats.stopReason, 'invalid-state');
-    assert.match(f.skill.finalize(base).error!, reason);
-    assert.match(f.skill.finalize(base).verification!.summary, reason);
+    assert.match(f.result().detail!, reason);
+    assert.equal(f.events.some(e => e.type === 'verification_end'), false);
   }
 });
 
@@ -168,7 +159,7 @@ test('mixed-scale real-world locator response stops after the preceding valid se
   assert.deepEqual(f.moves, ['forward']);
   assert.equal(f.skill.stats.executedSteps, 1);
   assert.equal(f.skill.stats.stopReason, 'invalid-state');
-  assert.match(f.skill.finalize(base).error!, /572/);
+  assert.match(f.result().detail!, /572/);
   assert.equal(f.counts().stops, 1);
 });
 
@@ -196,12 +187,12 @@ test('named integer corners convert to width and height without guessing old arr
   assert.ok(parseDetection(JSON.stringify({ ...rest, coordinateSystem: 'xywh-1000', box1000: [545,572,590,685] })).invalidReason);
 });
 
-test('interaction mode continues past area threshold then holds two prompt frames and verifies', async () => {
+test('interaction mode continues past area threshold then returns two prompt frames as a candidate', async () => {
   const absent = { ...detection(), interaction: { status: 'absent' as const, text: '' } };
   const present = { ...detection(), interaction: { status: 'present' as const, text: 'A 调查' } };
   const f = setup([absent, present, present], true); await f.run();
   assert.deepEqual(f.moves, ['forward']);
-  assert.equal(f.skill.finalize(base).status, 'succeeded');
+  assert.equal(f.result().arrivalCandidate, true);
   assert.equal(f.skill.stats.trackingCalls, 3);
 });
 

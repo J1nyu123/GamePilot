@@ -9,7 +9,7 @@
     "build": "node scripts/build.mjs",
     "start": "electron .",
     "typecheck": "tsc --noEmit",
-    "test": "node --import tsx --test tests/config.test.ts tests/session.test.ts tests/capture.test.ts tests/input.test.ts tests/verification.test.ts tests/supervisor.test.ts",
+    "test": "node --import tsx --test tests/config.test.ts tests/session.test.ts tests/capture.test.ts tests/input.test.ts tests/verification.test.ts tests/supervisor.test.ts tests/runner.test.ts tests/runner-session.test.ts tests/experiment.test.ts",
     "test:ui": "node tests/electron-smoke.mjs",
     "test:dev": "node tests/dev-smoke.mjs",
     "test:capture": "node tests/capture-smoke.mjs",
@@ -26,7 +26,7 @@
     "p4": "node --import tsx scripts/p4.ts",
     "test:p4": "node --import tsx --test tests/p4.test.ts tests/pause.test.ts",
     "test:p3": "node --import tsx --test tests/approach.test.ts",
-    "test:p3-agent": "node --import ./runtime/p1/scripts/pi-source.mjs --import tsx --test tests/approach-agent.test.ts",
+    "test:p3-agent": "node --import ./runtime/p1/scripts/pi-source.mjs --import tsx --test tests/approach-agent.test.ts tests/verifier-criteria.test.ts",
     "audit:p3": "node --import tsx scripts/audit-approach.ts",
     "test:p3-ui": "node tests/approach-ui-smoke.mjs"
   },

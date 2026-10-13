@@ -73,3 +73,28 @@ button:focus-visible, textarea:focus-visible, select:focus-visible, [role="separ
 .approach-region input, .approach-setup input[type=number] { width: 55px; flex: 0 1 55px; }
 .approach-progress { font-size: 11px; line-height: 1.6; padding: 8px; border-left: 2px solid #8275d7; background: #181a27; margin: 6px 0; }
 .approach-progress p { overflow-wrap: anywhere; }
+
+/* Agent Trace keeps execution visible above the compact task composer. */
+.transcript-wrap { flex-direction: column; min-height: 220px; }
+.transcript { flex: 1; min-height: 0; }
+.trace-metrics { display: flex; gap: 20px; padding: 10px 20px; border-bottom: 1px solid #29313d; color: #8594aa; font-size: 10px; flex-shrink: 0; }
+.trace-metrics b { color: #ddd7ff; margin-left: 5px; font-family: Consolas, monospace; }
+.trace-section-title { display: flex; justify-content: space-between; font-size: 11px; color: #c5cede; margin-bottom: 12px; }
+.trace-section-title span { color: #78889e; }
+.trace-timeline { margin-bottom: 24px; }
+.trace-event { border-left: 1px solid #3c4658; padding: 8px 0 8px 12px; }
+.trace-event summary { display: flex; gap: 9px; align-items: baseline; cursor: pointer; }
+.trace-kind { font: 9px Consolas, monospace; color: #bcb2ff; min-width: 44px; }
+.trace-act { color: #e3c884; }.trace-verify { color: #81c5ae; }.trace-observe { color: #83bce2; }
+.trace-event-text { font-size: 11px; line-height: 1.6; flex: 1; overflow-wrap: anywhere; }
+.trace-event time { color: #77879c; font-size: 9px; }
+.trace-event p { color: #8b9bb1; font-size: 10px; overflow-wrap: anywhere; }
+.composer { max-height: 48vh; overflow-y: auto; scrollbar-width: thin; }
+.composer textarea { min-height: 58px; max-height: 100px; }
+.composer .goal-condition textarea { min-height: 50px; }
+@media (max-height: 850px) { .transcript-wrap { min-height: 180px; } .composer { max-height: 40vh; } }
+.composer { flex-shrink: 1; min-height: 120px; max-height: 48%; }
+.transcript-empty { padding: 8px 0; }
+.transcript-empty .legend { margin-top: 12px; }
+.transcript-empty .terminal-mark { font-size: 24px; }
+.agent-footer { flex-shrink: 0; }

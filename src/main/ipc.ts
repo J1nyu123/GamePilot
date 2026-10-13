@@ -1,8 +1,7 @@
-import { normalizeApproach, approachCondition, approachLimits, type ApproachSpec } from '../contracts/approach';
-import { TargetEstimator } from '../state/target-estimator';
-import { ApproachTarget } from '../skills/approach-target';
-// @ts-expect-error Local Pi transport in mjs is bundled through the pinned resolver.
-import { locateTarget } from '../state/target-model.mjs';
+import type { ApproachSpec } from '../contracts/approach';
+import type { ExecutionStrategy } from '../contracts/run';
+import { createApproachExperiment } from '../experiments/approach';
+import { createRealExecution } from '../runtime/real-execution';
 import { nextAssignment, reserveAssignment, type Assignment } from '../benchmarks/campaign';
 import { ipcMain, dialog, nativeImage, shell, BrowserWindow, globalShortcut } from 'electron';
 import { readFile, stat, mkdir, writeFile, appendFile } from 'node:fs/promises';
@@ -19,8 +18,6 @@ import { toObservation } from '../capture/observation';
 import { ManualInputController } from '../input/manual-controller';
 import { findPython } from '../input/python-client';
 import { inputChannels, type InputMode, type ManualSkill } from '../contracts/input';
-import { RuntimeSupervisor, newSupervisorBudget } from '../runtime/supervisor';
-import { GameVerifier } from '../verification/verifier';
 import type { GoalSpec } from '../contracts/verification';
 
 // Host-only dependency injection for isolated tests; no renderer or environment bypass.
@@ -136,7 +133,7 @@ export function registerIpc(window: BrowserWindow, root: string, overrides: {
     if (session.busy) throw new Error('运行期间不能替换图片');
     selected = { image, bytes }; return image;
   });
-  handle(channels.start, async (input: { imageId: string; prompt: string; timeoutMs: number; executionMode?: ExecutionMode; successCondition?: string; benchmark?: Assignment; approach?: Omit<ApproachSpec, 'targetId'> }) => {
+  handle(channels.start, async (input: { imageId: string; prompt: string; timeoutMs: number; executionMode?: ExecutionMode; successCondition?: string; benchmark?: Assignment; approach?: Omit<ApproachSpec, 'targetId'>; executionStrategy?: ExecutionStrategy }) => {
     if (session.busy) throw new Error('已有运行正在进行');
     if (inputController.busy) throw new Error('请等待手柄调试输入结束后运行模型');
     if (!input || !selected || input.imageId !== selected.image.id) throw new Error('请先导入本次输入图片');
@@ -145,10 +142,11 @@ export function registerIpc(window: BrowserWindow, root: string, overrides: {
     const mode = input.executionMode ?? 'simulation';
     if (!['simulation', 'virtual-xbox', 'verified-xbox', 'approach-xbox'].includes(mode)) throw new Error('无效模型工具模式');
     let goal: GoalSpec | undefined;
-    const approach = mode === 'approach-xbox' ? normalizeApproach(input.approach) : undefined;
-    if (mode === 'verified-xbox' || approach) {
+    if (input.executionStrategy !== undefined && (mode !== 'approach-xbox' || !['direct', 'agent'].includes(input.executionStrategy))) throw new Error('执行策略仅用于 P3，且必须为 direct/agent');
+    const experiment = mode === 'approach-xbox' ? createApproachExperiment(input.approach, input.successCondition!, input.executionStrategy) : undefined;
+    if (mode === 'verified-xbox' || experiment) {
       if (typeof input.successCondition !== 'string' || !input.successCondition.trim() || input.successCondition.length > 2000) throw new Error('目标验证需填写 1–2000 字符的可见成功条件');
-      goal = Object.freeze({ id: randomUUID(), successCondition: approach ? approachCondition(approach, input.successCondition.trim()) : input.successCondition.trim() });
+      goal = experiment?.task ?? Object.freeze({ id: randomUUID(), successCondition: input.successCondition.trim() });
     }
     const fixed = selected;
     const config = await loadModelConfig(root);
@@ -171,74 +169,9 @@ export function registerIpc(window: BrowserWindow, root: string, overrides: {
       if (!info || info.identity !== evidence.identity || !(overrides.isForeground ? await overrides.isForeground(evidence.sourceId) : info.foreground)) throw new Error('游戏窗口失焦或已关闭，已停止 Agent');
     };
     const benchmark = input.benchmark ? await reserveAssignment(root, input.benchmark, config) : undefined;
-    const budget = newSupervisorBudget();
-    let baseline: ImportedImage | undefined;
+    const execution = createRealExecution({ inputController, guard, captureInput, config, evidence, goal, experiment, interrupt: () => session.cancelActive() });
     return session.start(fixed.image, fixed.bytes, input.prompt.trim(), input.timeoutMs, config, {
-      simulated: false, goal, benchmark, experiment: approach ? { kind: 'p3-approach', spec: approach, limits: approachLimits } : undefined, pausable: !approach, metrics: goal && !approach ? () => ({ moves: budget.moves, waits: budget.waits, observations: budget.observations, verifierCalls: budget.verifierCalls }) : undefined,
-      runner: (options, replaceInput, trace) => inputController.withAgent(options.signal, guard, async (execute, ensureNeutral) => {
-        options.signal.throwIfAborted();
-        options.onEvent({ sequence: 0, timestamp: Date.now(), type: 'observation_start', text: '正在获取准备完成后的游戏窗口新帧', simulated: false });
-        const receipt = baseline ? await ensureNeutral() : undefined;
-        const release = receipt ? { id: randomUUID(), receipt, sourceId: evidence.sourceId, identity: evidence.identity, captureGeneration: evidence.generation, receivedAt: Date.now(), order: 'release-ack-then-capture' as const } : undefined;
-        const fresh = await captureInput();
-        await guard(); options.signal.throwIfAborted();
-        if (!baseline) { await replaceInput(fresh.image, fresh.bytes); baseline = fresh.image; }
-        else {
-          await trace.saveObservation(fresh.image, fresh.bytes, release!);
-          budget.observations++;
-          options.onEvent({ sequence: 0, timestamp: Date.now(), type: 'observation_resumed', observationId: fresh.image.id, release, text: '恢复后新帧，原始目标参考图保持不变' });
-        }
-        if (approach && goal) {
-          let turn = 0, toolCallId: string | undefined;
-          const emit = (type: string, fields: Partial<import('../contracts/debug').AgentEvent>) => options.onEvent({ sequence: 0, timestamp: Date.now(), type, turn, toolCallId, simulated: false, ...fields });
-          const verifier = new GameVerifier(config, text => emit('verification_model_text', { text }));
-          const skill = new ApproachTarget(approach, goal, fresh.image, options.signal, {
-            execute, neutral: ensureNeutral, stop: reason => inputController.stop(reason),
-            capture: async signal => { signal.throwIfAborted(); const captured = await captureInput(); signal.throwIfAborted(); await guard(); signal.throwIfAborted(); return captured.image; },
-            save: (image, release) => trace.saveObservation(image, Buffer.from(image.dataUrl.split(',')[1], 'base64'), release),
-            tracker: new TargetEstimator(request => locateTarget({ config, input: request })), verify: request => verifier.verify(request), emit,
-          });
-          const result = await runValidation({ ...options, maxTurns: Math.min(options.maxTurns ?? 4, 3), image: { type: 'image', data: fresh.bytes.toString('base64'), mimeType: fresh.image.mimeType },
-            onEvent: event => { if (event.turn) turn = event.turn; options.onEvent(event); },
-            approachTools: { goal: goal.successCondition, targetId: approach.targetId, observationId: fresh.image.id,
-              allow: name => skill.allow(name), execute: (args, signal, id) => { toolCallId = id; return skill.execute(args, signal, id); } },
-          });
-          return skill.finalize(result);
-        }
-        if (goal) {
-          let turn = 0, toolCallId: string | undefined;
-          const verifier = new GameVerifier(config, text => options.onEvent({ sequence: 0, timestamp: Date.now(), type: 'verification_model_text', turn, toolCallId, text, simulated: false }));
-          const supervisor = new RuntimeSupervisor(goal, baseline, options.signal, {
-            execute, neutral: ensureNeutral,
-            capture: async signal => { const captured = await captureInput(); signal.throwIfAborted(); await guard(); signal.throwIfAborted(); return captured.image; },
-            save: (image, release) => trace.saveObservation(image, Buffer.from(image.dataUrl.split(',')[1], 'base64'), release),
-            verify: request => verifier.verify(request),
-            emit: (type, fields) => options.onEvent({ sequence: 0, timestamp: Date.now(), type, turn, simulated: false, ...fields }),
-          }, budget, fresh.image);
-          const withSignal = async <T>(signal: AbortSignal | undefined, id: string, work: () => Promise<T>) => {
-            toolCallId = id;
-            const stop = () => { void inputController.stop('工具调用已取消').catch(() => {}); };
-            signal?.throwIfAborted(); signal?.addEventListener('abort', stop, { once: true });
-            try { return await work(); } finally { signal?.removeEventListener('abort', stop); }
-          };
-          const result = await runValidation({ ...options, image: { type: 'image', data: fresh.bytes.toString('base64'), mimeType: fresh.image.mimeType },
-            onEvent: event => { if (event.turn) turn = event.turn; options.onEvent(event); },
-            verifiedTools: { goal: goal.successCondition, allow: name => supervisor.allow(name),
-              move: (args, signal, id) => withSignal(signal, id, () => supervisor.move(args, signal, id)),
-              wait: (args, signal, id) => withSignal(signal, id, () => supervisor.wait(args, signal, id)),
-            },
-          });
-          return supervisor.finalize(result);
-        }
-        return runValidation({ ...options, image: { type: 'image', data: fresh.bytes.toString('base64'), mimeType: fresh.image.mimeType },
-          movement: async (args, toolSignal) => {
-            const stop = () => { void inputController.stop('工具调用已取消').catch(() => {}); };
-            toolSignal?.throwIfAborted(); toolSignal?.addEventListener('abort', stop, { once: true });
-            try { return await execute({ skill: 'move_for', ...args, strength: 0.5 }); }
-            finally { toolSignal?.removeEventListener('abort', stop); }
-          },
-        });
-      }, () => session.cancelActive(), (type, text, result) => options.onEvent({ sequence: 0, timestamp: Date.now(), type, text, result, simulated: false })),
+      simulated: false, goal, benchmark, experiment, pausable: !experiment, ...execution,
     });
   });
   handle(channels.pause, (runId: string) => { session.pause(runId); return null; });

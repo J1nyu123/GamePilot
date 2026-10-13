@@ -1,5 +1,6 @@
 import { normalizeApproach, type ApproachSpec } from '../contracts/approach';
 import type { Assignment } from '../benchmarks/campaign';
+import type { ExecutionStrategy } from '../contracts/run';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { AgentEvent, ConfigSummary, ImportedImage, RunStatus, ExecutionMode } from '../contracts/debug';
 import InputPreview from './components/InputPreview';
@@ -14,6 +15,7 @@ import type { KeyObservation } from '../contracts/verification';
 export default function App() {
   const [approach, setApproach] = useState<Omit<ApproachSpec, 'targetId'>>({ description: '', region: [.35, .2, .3, .65], minArea: .06, requireInteraction: true });
   const [approachAvailable, setApproachAvailable] = useState(false);
+  const [executionStrategy, setExecutionStrategy] = useState<ExecutionStrategy>('agent');
   let approachValid = false; try { normalizeApproach(approach); approachValid = true; } catch {}
   const [campaignId, setCampaignId] = useState(''), [assignment, setAssignment] = useState<Assignment | null>(null);
   const [config, setConfig] = useState<ConfigSummary | null>(null), [image, setImage] = useState<ImportedImage | null>(null);
@@ -115,7 +117,7 @@ export default function App() {
       }
       if (!input) return;
       setEvents([]); setRunId(''); activeRun.current = ''; setStatus('running'); setRunImage(executionMode !== 'simulation' ? null : input); setShowRunImage(true); setShowLive(executionMode !== 'simulation'); setKeyFrames([]); setViewObservationId('');
-      const result = await window.gamepilot.startRun({ imageId: input.id, prompt, timeoutMs: timeout * 1000, executionMode, successCondition: ['verified-xbox', 'approach-xbox'].includes(executionMode) ? successCondition : undefined, benchmark: assignment ?? undefined, approach: executionMode === 'approach-xbox' ? approach : undefined });
+      const result = await window.gamepilot.startRun({ imageId: input.id, prompt, timeoutMs: timeout * 1000, executionMode, successCondition: ['verified-xbox', 'approach-xbox'].includes(executionMode) ? successCondition : undefined, benchmark: assignment ?? undefined, approach: executionMode === 'approach-xbox' ? approach : undefined, executionStrategy: executionMode === 'approach-xbox' ? executionStrategy : undefined });
       if (result.ok) { setAssignment(null); activeRun.current = result.value.runId; setRunId(result.value.runId); }
       else { setError(result.error); setStatus('idle'); void refreshConfig(); }
     } catch { setError('无法启动 Runtime'); setStatus('failed'); }
@@ -163,7 +165,7 @@ export default function App() {
       </div>
       <div className="splitter" role="separator" aria-label="调整左右宽度" aria-orientation="vertical" tabIndex={0} onPointerDown={resize}
         onKeyDown={e => { if (e.key === 'ArrowLeft') setRatio(x => Math.max(35, x - 2)); if (e.key === 'ArrowRight') setRatio(x => Math.min(65, x + 2)); }}><span /></div>
-      <section className="agent-pane"><div className="agent-bar"><div><span className="eyebrow">AGENT TRANSCRIPT</span><h2>执行记录</h2></div>
+      <section className="agent-pane"><div className="agent-bar"><div><span className="eyebrow">LIVE EXECUTION</span><h2>Agent Trace</h2></div>
         <span className={`run-status ${busy ? 'is-active' : ''}`}><span className={busy ? 'activity-dot' : 'status-dot'} />{statusLabel[status]}</span></div>
         <AgentTranscript events={events} status={status} phase={phase} />
         {busy && ['verified-xbox', 'approach-xbox'].includes(executionMode) && <div className="agent-footer">
@@ -180,9 +182,9 @@ export default function App() {
           }}>载入下一项</button>
           {assignment && <p>{assignment.group} · 第 {assignment.trial} 次。先手工恢复冻结场景，再运行。取消组需在指定阶段按 F8。<button disabled={busy} onClick={() => setAssignment(null)}>退出本次验收</button></p>}
         </details>}
-        <AgentComposer approach={approach} setApproach={setApproach} prompt={prompt} setPrompt={setPrompt} busy={busy} mode={executionMode} successCondition={successCondition} setSuccessCondition={setSuccessCondition} setMode={mode => {
+        <AgentComposer executionStrategy={executionStrategy} setExecutionStrategy={setExecutionStrategy} approach={approach} setApproach={setApproach} prompt={prompt} setPrompt={setPrompt} busy={busy} mode={executionMode} successCondition={successCondition} setSuccessCondition={setSuccessCondition} setMode={mode => {
           setExecutionMode(mode); if (mode !== 'verified-xbox') setAssignment(null);
-          if (mode === 'approach-xbox') setPrompt('观察固定可见目标，在清晰可操作场景调用一次 approach_target。根据技能内部反馈停止，按独立验证报告屏幕视觉条件是否达到。');
+          if (mode === 'approach-xbox') setPrompt('接近固定可见目标。根据新帧和独立验证反馈，在运行总预算内执行；验证通过或证据无法确认时停止。');
           if (mode !== 'simulation' && (!realRuntimeAvailable || (mode === 'verified-xbox' && !verifiedRuntimeAvailable) || (mode === 'approach-xbox' && !approachAvailable))) setError('真实模型工具/验证的 Main/preload 未就绪，请关闭应用并重新执行 start.ps1');
           if (mode !== 'simulation') { setWindowInput(true); if (prompt.includes('move_for 模拟向左移动')) setPrompt(mode === 'verified-xbox' ? '观察游戏画面，围绕固定成功条件选择短移动或只读等待。根据动作后验证决定是否继续，条件通过后停止。' : '观察当前游戏画面；若处于可操作场景，调用一次 move_for 向左移动 200 毫秒。总结输入回执，不要声称游戏目标已完成。'); }
         }} canceling={status === 'canceling' || starting} canRun={!busy && !inputBusy && !snapshotting && (windowInput ? capture.status === 'streaming' : Boolean(image)) && config?.status === 'ready' && Boolean(prompt.trim()) && (executionMode === 'simulation' || (realRuntimeAvailable && windowInput && capture.status === 'streaming' && inputState.mode === 'virtual-xbox' && inputState.status === 'ready')) && (executionMode !== 'verified-xbox' || (verifiedRuntimeAvailable && Boolean(successCondition.trim()))) && (executionMode !== 'approach-xbox' || (approachAvailable && approachValid && Boolean(successCondition.trim())))} onRun={start} onCancel={cancel} />

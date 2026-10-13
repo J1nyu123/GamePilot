@@ -15,6 +15,7 @@ export interface RunSummary {
   status: Exclude<RunStatus, 'idle' | 'running' | 'canceling' | 'pausing' | 'paused'>; simulated: boolean; gameOutcome: 'unverified' | Verdict;
   turns: number; completedTools: number; toolErrors: number; finalText: string; error?: string;
   approach?: ApproachStats; verification?: VerificationResult; metrics?: { moves: number; waits: number; observations: number; verifierCalls: number };
+  runResult?: import('./run').RunResult;
 }
 export interface AgentEvent {
   runId: string; sequence: number; timestamp: number; type: string; turn?: number;
@@ -41,7 +42,7 @@ export interface DebugApi {
   onInput(callback: (state: InputDebugState) => void): () => void;
   getConfig(): Promise<Result<ConfigSummary>>;
   importImage(): Promise<Result<ImportedImage | null>>;
-  startRun(input: { imageId: string; prompt: string; timeoutMs: number; executionMode?: ExecutionMode; successCondition?: string; benchmark?: Assignment; approach?: Omit<ApproachSpec, 'targetId'> }): Promise<Result<{ runId: string }>>;
+  startRun(input: { imageId: string; prompt: string; timeoutMs: number; executionMode?: ExecutionMode; successCondition?: string; benchmark?: Assignment; approach?: Omit<ApproachSpec, 'targetId'>; executionStrategy?: import('./run').ExecutionStrategy }): Promise<Result<{ runId: string }>>;
   pauseRun(runId: string): Promise<Result<null>>;
   resumeRun(runId: string): Promise<Result<null>>;
   takeoverRun(runId: string): Promise<Result<null>>;

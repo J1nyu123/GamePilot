@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { ApproachTarget } from '../src/skills/approach-target';
+import { ApproachRunner } from '../src/runtime/approach-runner';
 import { TargetEstimator } from '../src/state/target-estimator';
 import { normalizeApproach } from '../src/contracts/approach';
 import { GameVerifier } from '../src/verification/verifier';
@@ -12,7 +12,7 @@ import { locateTarget } from '../src/state/target-model.mjs';
 const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a5GQAAAAASUVORK5CYII=';
 const frame = (n: number): ImportedImage => ({ id: `frame-${n}`, name: 'fixture', path: '', importedAt: 1, mimeType: 'image/png', width: 1, height: 1, size: 1, dataUrl: `data:image/png;base64,${png}`, source: 'window',
   evidence: { sourceId: 'window:1:0', title: 'fixture', identity: 'same', generation: 1, frameSequence: n, sourceMediaTime: n, presentedFrames: n, barrierMediaTime: n-.1, barrierPresentedFrames: n-1, barrierRequestedAt: n*100, capturedAt: n*100+1, receivedAt: n*100+2, clock: 'video-media-time', freshness: 'after-source-barrier' } });
-async function run(scenario: 'pass' | 'lost' | 'verifier-failed' | 'claims-only' | 'batch' | 'invalid-args') {
+async function run(scenario: 'pass' | 'lost' | 'verifier-failed' | 'claims-only' | 'batch' | 'invalid-args' | 'correction' | 'summary-error') {
   let planner = 0, tracker = 0, verification = 0, n = 1; const moves: string[] = [];
   const controller = new AbortController();
   const server = createServer(async (req, res) => {
@@ -30,11 +30,18 @@ async function run(scenario: 'pass' | 'lost' | 'verifier-failed' | 'claims-only'
       send({ content: JSON.stringify({ mode: 'gameplay', visible: scenario !== 'lost', sameTarget: scenario !== 'lost', sceneStable: true, pathClear: true, coordinateSystem: 'ltrb-1000', bounds1000: scenario === 'lost' ? null : { left: Math.round(box[0]*1000), top: Math.round(box[1]*1000), right: Math.round((box[0]+box[2])*1000), bottom: Math.round((box[1]+box[3])*1000) }, interaction: { status: 'present', text: 'A 调查（测试）' }, confidence: .95, facts: ['unique pillar'] }) }); send({}, 'stop');
     } else if (verifying) {
       verification++; assert.ok(!input.tools?.length);
-      send({ content: JSON.stringify({ verdict: scenario === 'verifier-failed' ? 'failed' : 'passed', summary: 'fixed visible criterion', facts: ['visible pillar'] }) }); send({}, 'stop');
+      const text = input.messages[1].content[0].text;
+      const criteria = JSON.parse(text.match(/Criteria: (.*)\n/)[1]);
+      const evidenceIds = JSON.parse(text.match(/Allowed evidence IDs: (.*)\n/)[1]);
+      const verdict = scenario === 'verifier-failed' || scenario === 'correction' && verification === 1 ? 'failed' : 'passed';
+      send({ content: JSON.stringify({ verdict, summary: 'fixed visible criterion', facts: ['visible pillar'],
+        criteria: criteria.map((c: { id: string }) => ({ id: c.id, verdict, evidenceIds: evidenceIds.slice(1), reason: 'visible pillar' })) }) }); send({}, 'stop');
     } else {
       planner++; assert.deepEqual(input.tools.map((t: { function: { name: string } }) => t.function.name), ['approach_target']);
-      if (planner === 1 && scenario !== 'claims-only') {
-        const args = { targetId: 'fixed-target', observationId: 'frame-1', ...(scenario === 'invalid-args' ? { maxSteps: 999 } : {}) };
+      if (scenario === 'summary-error' && planner === 2) { res.destroy(); return; }
+      if ((planner === 1 && scenario !== 'claims-only') || scenario === 'correction' && planner === 2) {
+        const packet = planner > 1 ? JSON.parse(input.messages.find((m: { role: string }) => m.role === 'tool').content) : undefined;
+        const args = { targetId: 'fixed-target', observationId: packet?.observationId ?? 'frame-1', ...(scenario === 'invalid-args' ? { maxSteps: 999 } : {}) };
         const call = { index: 0, id: 'approach-1', type: 'function', function: { name: 'approach_target', arguments: JSON.stringify(args) } };
         send({ tool_calls: [call, ...(scenario === 'batch' ? [{ ...call, index: 1, id: 'approach-2' }] : [])] }); send({}, 'tool_calls');
       } else { send({ content: 'planner-private-claim: done' }); send({}, 'stop'); }
@@ -47,20 +54,38 @@ async function run(scenario: 'pass' | 'lost' | 'verifier-failed' | 'claims-only'
   try {
     const spec = normalizeApproach({ description: 'unique pillar', region: [.35,.2,.3,.65], minArea: .06 });
     const verifier = new GameVerifier(config);
-    const skill = new ApproachTarget(spec, { id: 'goal', successCondition: 'fixed pillar screen condition' }, frame(1), controller.signal, {
+    const runner = new ApproachRunner(spec, { id: 'goal', successCondition: 'fixed pillar screen condition' }, frame(1), controller.signal, {
       execute: async (input, beforeSend) => { beforeSend(); moves.push(input.skill === 'move_for' ? input.direction : 'button'); return { ok: true, neutral: true, status: 'executed' }; },
       neutral: async () => ({ ok: true, neutral: true }), stop: async () => {}, capture: async () => frame(++n), save: async () => {}, emit: () => {},
       tracker: new TargetEstimator(input => locateTarget({ config, input })), verify: input => verifier.verify(input),
     });
-    const summary = await runValidation({ ...config, signal: controller.signal, timeoutMs: 5000, prompt: 'approach fixed target', image: { type: 'image', data: png, mimeType: 'image/png' }, onEvent: () => {},
-      approachTools: { goal: 'fixed', targetId: spec.targetId, observationId: 'frame-1', allow: name => skill.allow(name), execute: (args, signal, id) => skill.execute(args, signal, id) } });
-    return { summary: skill.finalize(summary), moves, planner, tracker, verification };
+    const summary = await runner.run('agent', toolRegistry => runValidation({ ...config, signal: controller.signal, timeoutMs: 5000, prompt: 'approach fixed target', image: { type: 'image', data: png, mimeType: 'image/png' }, onEvent: () => {},
+      toolRegistry }));
+    return { summary, moves, planner, tracker, verification };
   } finally { server.closeAllConnections(); await new Promise<void>(done => server.close(() => done())); }
 }
 test('Pi chooses one feedback skill; independent locator corrects left→forward; independent verifier accepts', async () => {
   const result = await run('pass'); assert.deepEqual(result.moves, ['left', 'forward']); assert.equal(result.tracker, 4); assert.equal(result.verification, 1); assert.equal(result.planner, 2); assert.equal(result.summary.status, 'succeeded');
 });
-for (const scenario of ['lost', 'verifier-failed', 'claims-only', 'batch', 'invalid-args'] as const) test(`${scenario}: no unverified completion or unbounded second skill`, async () => {
+for (const scenario of ['lost', 'verifier-failed', 'claims-only', 'invalid-args'] as const) test(`${scenario}: no unverified completion or unbounded second skill`, async () => {
   const result = await run(scenario); assert.notEqual(result.summary.status, 'succeeded'); assert.notEqual(result.summary.gameOutcome, 'passed');
   assert.ok(result.moves.length <= 2); if (['lost', 'claims-only', 'invalid-args'].includes(scenario)) assert.equal(result.moves.length, 0);
+});
+
+
+test('batched skills cannot dispatch a second invocation, even after valid verification', async () => {
+  const result = await run('batch');
+  assert.equal(result.verification, 1); assert.deepEqual(result.moves, ['left', 'forward']);
+  assert.equal(result.summary.gameOutcome, 'passed');
+  assert.ok(result.summary.runResult?.agentSummaryError);
+});
+test('Pi retries after failed verification with latest observation and unchanged criteria', async () => {
+  const result = await run('correction');
+  assert.equal(result.summary.status, 'succeeded'); assert.equal(result.summary.approach?.calls, 2);
+  assert.equal(result.verification, 2); assert.equal(result.tracker, 6); assert.deepEqual(result.moves, ['left', 'forward']);
+});
+test('provider failure during final Agent summary preserves passed verification', async () => {
+  const result = await run('summary-error');
+  assert.equal(result.verification, 1); assert.equal(result.summary.status, 'succeeded');
+  assert.equal(result.summary.verification?.verdict, 'passed'); assert.ok(result.summary.runResult?.agentSummaryError);
 });
