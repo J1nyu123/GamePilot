@@ -1,0 +1,54 @@
+{
+  "name": "gamepilot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/main/index.mjs",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "build": "node scripts/build.mjs",
+    "start": "electron .",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test tests/config.test.ts tests/session.test.ts tests/capture.test.ts tests/input.test.ts tests/verification.test.ts tests/supervisor.test.ts",
+    "test:ui": "node tests/electron-smoke.mjs",
+    "test:dev": "node tests/dev-smoke.mjs",
+    "test:capture": "node tests/capture-smoke.mjs",
+    "test:python": "node scripts/test-python.mjs",
+    "test:input-ui": "node tests/input-ui-smoke.mjs",
+    "test:agent-input": "node --import ./runtime/p1/scripts/pi-source.mjs --import tsx --test tests/agent-input.test.ts",
+    "test:agent-ui": "node tests/agent-input-smoke.mjs",
+    "test:verified-runtime": "node --import ./runtime/p1/scripts/pi-source.mjs --import tsx --test tests/verified-runtime.test.ts",
+    "test:capture-requests": "node tests/capture-request-smoke.mjs",
+    "test:acceptance": "node --import tsx --test tests/acceptance.test.ts",
+    "audit:run": "node --import tsx scripts/audit-run.ts",
+    "probe:driver": "node --import tsx scripts/probe-gamepad.mjs",
+    "probe:driver-ui": "node tests/driver-ui-probe.mjs",
+    "p4": "node --import tsx scripts/p4.ts",
+    "test:p4": "node --import tsx --test tests/p4.test.ts tests/pause.test.ts",
+    "test:p3": "node --import tsx --test tests/approach.test.ts",
+    "test:p3-agent": "node --import ./runtime/p1/scripts/pi-source.mjs --import tsx --test tests/approach-agent.test.ts",
+    "audit:p3": "node --import tsx scripts/audit-approach.ts",
+    "test:p3-ui": "node tests/approach-ui-smoke.mjs"
+  },
+  "engines": {
+    "node": ">=24.20.0"
+  },
+  "dependencies": {
+    "react": "19.0.0",
+    "react-dom": "19.0.0"
+  },
+  "devDependencies": {
+    "electron": "44.7.0",
+    "esbuild": "0.28.2",
+    "vite": "6.1.0",
+    "@vitejs/plugin-react": "4.3.4",
+    "typescript": "5.7.3",
+    "tsx": "4.19.2",
+    "@types/node": "22.19.19",
+    "@types/react": "19.0.8",
+    "@types/react-dom": "19.0.3",
+    "tailwindcss": "4.1.3",
+    "@tailwindcss/vite": "4.1.3",
+    "@playwright/test": "1.64.0"
+  }
+}

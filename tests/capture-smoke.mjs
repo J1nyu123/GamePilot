@@ -1,0 +1,81 @@
+import { _electron as electron, expect } from '@playwright/test';
+import { mkdtemp, writeFile, readFile, rm, mkdir } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { createServer } from 'node:http';
+import assert from 'node:assert/strict';
+const temp = await mkdtemp(join(tmpdir(), 'gamepilot-capture-'));
+const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE; delete env.GAMEPILOT_RENDERER_URL;
+let requests = 0, sentImage = '';
+const server = createServer(async (req, res) => {
+  let body = ''; for await (const chunk of req) body += chunk;
+  const input = JSON.parse(body); requests++;
+  const content = input.messages.find(m => m.role === 'user').content;
+  sentImage = content.find(c => c.type === 'image_url').image_url.url;
+  res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+  const send = (delta, finish_reason = null) => res.write(`data: ${JSON.stringify({ id: 'capture', object: 'chat.completion.chunk', created: 1, model: 'mock', choices: [{ index: 0, delta, finish_reason }] })}\n\n`);
+  send({ role: 'assistant' });
+  await new Promise(r => setTimeout(r, 600));
+  if (input.messages.some(m => m.role === 'tool')) { send({ content: '模拟动作已完成，游戏效果未经验证。' }); send({}, 'stop'); }
+  else { send({ content: '已收到窗口截图，调用模拟工具。' }); send({ tool_calls: [{ index: 0, id: 'capture-tool', type: 'function', function: { name: 'move_for', arguments: '{"direction":"left","durationMs":200}' } }] }); send({}, 'tool_calls'); }
+  res.end('data: [DONE]\n\n');
+});
+await new Promise(r => server.listen(0, '127.0.0.1', r));
+await writeFile(join(temp, 'models.json'), JSON.stringify({ providers: { volcengine: { api: 'openai-completions', apiKey: 'capture-test-key', baseUrl: `http://127.0.0.1:${server.address().port}/v1`, models: [{ id: 'mock', input: ['text', 'image'] }] } } }));
+env.GAMEPILOT_CONFIG = join(temp, 'models.json'); delete env.GAMEPILOT_MODEL; delete env.GAMEPILOT_BASE_URL; delete env.GAMEPILOT_API_KEY;
+await writeFile(join(temp, 'package.json'), JSON.stringify({ main: 'main.cjs' }));
+await writeFile(join(temp, 'main.cjs'), `const {app,BrowserWindow}=require('electron');app.whenReady().then(()=>{const w=new BrowserWindow({width:960,height:640,backgroundColor:'#21344a',webPreferences:{nodeIntegration:false}});w.loadFile(${JSON.stringify(join(temp, 'target.html'))});});app.on('window-all-closed',()=>app.quit());`);
+await writeFile(join(temp, 'target.html'), '<html><head><title>Cemu P2-A 测试窗口（非游戏）</title></head><body style="margin:0;background:#21344a;color:#fff;font:24px sans-serif"><canvas id="c" width="900" height="530"></canvas><script>let n=0; const c=document.getElementById("c"),g=c.getContext("2d");setInterval(()=>{g.fillStyle="#21344a";g.fillRect(0,0,900,530);g.fillStyle="#99d4ff";g.fillRect((n*9)%720,220,120,120);g.fillStyle="#fff";g.font="28px sans-serif";g.fillText("P2-A / source frame "+n++,30,65)},100)</script></body></html>');
+let target, app;
+try {
+  target = await electron.launch({ args: [temp], env, timeout: 30000 }); await target.firstWindow();
+  app = await electron.launch({ args: ['.'], cwd: resolve('.'), env, timeout: 30000 });
+  const page = await app.firstWindow();
+  await expect(page.getByRole('combobox', { name: '游戏窗口' })).toContainText('Cemu P2-A', { timeout: 15000 });
+  const windows = await page.evaluate(async () => (await window.gamepilot.listWindows()).value);
+  const selected = windows.find(w => w.title.includes('Cemu P2-A'));
+  assert.ok(selected); await page.getByRole('combobox', { name: '游戏窗口' }).selectOption(selected.id);
+  await page.getByRole('button', { name: '开始预览' }).click();
+  await expect(page.getByAltText('游戏窗口实时画面')).toBeVisible({ timeout: 20000 });
+  let state = await page.evaluate(async () => (await window.gamepilot.getCaptureState()).value);
+  assert.equal(state.status, 'streaming'); assert.equal(requests, 0);
+  const originalWidth = state.frame.width;
+  await page.getByRole('button', { name: '截取新帧' }).click();
+  await expect(page.getByAltText('实际发送给模型的游戏截图')).toBeVisible();
+  const firstInput = await page.getByAltText('实际发送给模型的游戏截图').getAttribute('src');
+  await page.getByRole('button', { name: '实时画面', exact: true }).click();
+  await expect(page.getByAltText('游戏窗口实时画面')).toBeVisible();
+  await page.getByRole('button', { name: '待运行图片' }).click();
+  assert.equal(await page.getByAltText('实际发送给模型的游戏截图').getAttribute('src'), firstInput);
+  await page.getByRole('button', { name: /运行一次/ }).click();
+  await expect(page.getByRole('button', { name: '■ 取消运行' })).toBeVisible();
+  const fixed = await page.getByAltText('实际发送给模型的游戏截图').getAttribute('src');
+  await page.getByRole('button', { name: '实时画面', exact: true }).click();
+  await expect(page.getByAltText('游戏窗口实时画面')).toBeVisible();
+  await page.getByRole('button', { name: '记录对应的输入' }).click();
+  assert.equal(await page.getByAltText('实际发送给模型的游戏截图').getAttribute('src'), fixed);
+  await expect(page.locator('.run-status')).toHaveText('模拟链路通过', { timeout: 15000 }); assert.equal(sentImage, fixed);
+  const snapshot = await page.evaluate(async () => (await window.gamepilot.getSnapshot()).value);
+  const manifest = JSON.parse(await readFile(resolve('runs', snapshot.runId, 'manifest.json'), 'utf8'));
+  assert.equal(manifest.input.source, 'window'); assert.ok(manifest.input.evidence.sourceMediaTime > manifest.input.evidence.barrierMediaTime);
+  if (manifest.input.capturedAt !== null) assert.ok(manifest.input.capturedAt >= manifest.input.evidence.barrierRequestedAt);
+  assert.ok(snapshot.events.some(e => e.type === 'observation'));
+  await mkdir('artifacts', { recursive: true }); await page.screenshot({ path: 'artifacts/p2a-capture-desktop.png' });
+  await target.evaluate(({ BrowserWindow }) => { const w=BrowserWindow.getAllWindows()[0];w.setSize(740,520);w.setTitle('Cemu P2-A 标题更新'); });
+  await expect.poll(async () => (await page.evaluate(async () => (await window.gamepilot.getCaptureState()).value)).frame?.width).not.toBe(originalWidth);
+  await target.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].minimize());
+  await expect(page.locator('.capture-status')).toContainText('最小化', { timeout: 12000 });
+  const bad = await page.evaluate(() => window.gamepilot.captureFrame()); assert.equal(bad.ok, false);
+  await target.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].restore());
+  await page.getByRole('button', { name: '开始预览' }).click();
+  await expect(page.locator('.capture-status')).toContainText('只读实时预览', { timeout: 15000 });
+  await target.close(); target = undefined;
+  await expect(page.locator('.capture-status')).toContainText('已关闭', { timeout: 12000 });
+  await page.getByRole('button', { name: '实时画面', exact: true }).click();
+  await expect(page.getByText('窗口画面不可用')).toBeVisible();
+  assert.equal(requests, 2); // Preview/screenshot/window failures never call the model.
+  console.log('P2-A native Windows capture passed: select, live frames, snapshot barrier, immutable model image, mock tool loop, resize/title, minimize/restore/close, no preview uploads.');
+} finally {
+  await app?.close(); await target?.close(); server.closeAllConnections(); await new Promise(r => server.close(r));
+  await rm(temp, { recursive: true, force: true });
+}

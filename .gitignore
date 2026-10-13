@@ -1,0 +1,15 @@
+node_modules/
+dist/
+runs/
+artifacts/
+observations/
+input-debug/
+__pycache__/
+.env
+*.local.json
+
+.env.*
+!.env.example
+*.pem
+*.key
+.pi-agent/

@@ -1,0 +1,18 @@
+{
+  "providers": {
+    "volcengine": {
+      "baseUrl": "https://ark.cn-beijing.volces.com/api/v3",
+      "api": "openai-completions",
+      "apiKey": "${ARK_API_KEY}",
+      "models": [
+        {
+          "id": "YOUR_MODEL_ID",
+          "input": [
+            "text",
+            "image"
+          ]
+        }
+      ]
+    }
+  }
+}
