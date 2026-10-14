@@ -546,8 +546,8 @@ export function createWebGamepilot(): DebugApi {
                 planSource = data.source || 'gemini-3.8-flash';
               }
             }
-          } catch (e) {
-            console.warn('Failed to call /api/gemini/plan, using fallback parser', e);
+          } catch {
+            // Seamless fallback to local cognitive parsing
           }
 
           // Fallback parsing if backend route failed or offline

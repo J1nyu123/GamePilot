@@ -6,7 +6,6 @@ import type { AgentEvent, ConfigSummary, ImportedImage, RunStatus, ExecutionMode
 import InputPreview from './components/InputPreview';
 import AgentTranscript, { statusLabel } from './components/AgentTranscript';
 import AgentComposer from './components/AgentComposer';
-import CaptureToolbar from './components/CaptureToolbar';
 import type { CaptureState, GameWindow } from '../contracts/capture';
 import InputDebugPanel from './components/InputDebugPanel';
 import type { InputDebugState, InputMode, ManualSkill } from '../contracts/input';
@@ -37,7 +36,7 @@ export default function App() {
 
   // New Interactive Views
   const [leftView, setLeftView] = useState<'arena' | 'capture'>('arena');
-  const [rightTab, setRightTab] = useState<'chat' | 'trace'>('chat');
+  const [rightTab, setRightTab] = useState<'chat' | 'trace' | 'mcp'>('chat');
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
     {
       id: 'init-1',
@@ -292,155 +291,408 @@ export default function App() {
     document.addEventListener('pointermove', move); document.addEventListener('pointerup', up, { once: true });
   };
 
-  return <div className="app-shell">
-    <header className="app-header">
-      <div className="brand"><div className="brand-icon">G<span>↗</span></div><div><h1>GamePilot</h1><span>VISUAL AGENT LAB</span></div></div>
-      <div className="header-description">视觉闭环与目标验证 <span>/ 塞尔达沙盒 · 零先验手柄 MCP</span></div>
-      <span className="mode-badge"><span className="amber-dot" />{executionMode === 'simulation' ? '模拟工具模式' : executionMode === 'approach-xbox' ? 'P3 反馈技能实验' : executionMode === 'verified-xbox' ? '真实工具 + 独立验证' : '真实虚拟 Xbox 工具'}</span>
-    </header>
-
-    <div className="config-strip">
-      <div className="config-model"><span className={`status-dot ${config?.status === 'ready' ? 'ready' : ''}`} /><span className="mono">{config?.modelId || '模型配置待就绪'}</span></div>
-      <span className="config-message" title={config?.configPath}>{config?.message || '正在读取模型配置…'}</span>
-      <button disabled={busy} onClick={refreshConfig} title="重新读取模型配置">↻ 刷新配置</button>
-    </div>
-
-    {error && <div className="app-error" role="alert"><span>{error}</span><button onClick={() => setError('')}>关闭</button></div>}
-
-    <CaptureToolbar windows={windows} selected={sourceId} setSelected={setSourceId} state={capture} busy={busy || snapshotting || inputBusy} onRefresh={refreshWindows} onStart={startPreview} onStop={stopPreview} onSnapshot={snapshot} />
-
-    <InputDebugPanel state={inputState} modelBusy={busy} onConnect={connectInput} onDisconnect={disconnectInput} onExecute={executeInput} onStop={stopInput} />
-
-    <main className="workspace" ref={layout} style={{ '--left-width': `${ratio}%` } as React.CSSProperties}>
-      {/* Left Column: Interactive Zelda Arena / Preview */}
-      <div className="preview-column">
-        <div className="input-tabs">
-          <button className={leftView === 'arena' ? 'selected' : ''} onClick={() => setLeftView('arena')}>
-            🎮 塞尔达沙盒试验场 (Arena)
-          </button>
-          <button className={leftView === 'capture' ? 'selected' : ''} onClick={() => setLeftView('capture')}>
-            已捕获游戏画面 (Live Preview)
-          </button>
-          {keyFrames.length > 0 && (
-            <label className="evidence-selector" style={{ marginLeft: 'auto', marginBottom: 0 }}>
-              关键截图
-              <select
-                aria-label="运行关键截图"
-                value={viewObservationId}
-                onChange={e => {
-                  setViewObservationId(e.target.value);
-                  setLeftView('capture');
-                  setShowLive(false);
-                  setShowRunImage(true);
-                }}
-              >
-                <option value="">模型初始输入</option>
-                {keyFrames.map(frame => (
-                  <option key={frame.image.id} value={frame.image.id}>
-                    {frame.phase === 'before' ? '初始' : '动作后'} · 帧 #{frame.image.evidence?.frameSequence} · {frame.image.id.slice(0, 8)}
-                  </option>
-                ))}
-              </select>
-            </label>
-          )}
-        </div>
-
-        <div
-          className="preview-pane"
-          style={{
-            position: 'relative',
-            overflow: 'hidden',
-            display: leftView === 'arena' ? 'block' : 'none',
-            height: '100%',
-          }}
-        >
-          <ZeldaArenaCanvas />
-        </div>
-
-        <div
-          style={{
-            display: leftView === 'capture' ? 'block' : 'none',
-            height: '100%',
-          }}
-        >
-          <InputPreview
-            image={viewObservationId ? keyFrames.find(frame => frame.image.id === viewObservationId)?.image ?? null : showRunImage ? runImage : image}
-            purpose={viewObservationId ? 'evidence' : undefined}
-            used={Boolean(runImage && (showRunImage || image?.id === runImage.id))}
-            busy={busy || snapshotting}
-            onImport={importImage}
-            live={showLive ? capture : undefined}
-          />
-        </div>
-      </div>
-
-      <div className="splitter" role="separator" aria-label="调整左右宽度" aria-orientation="vertical" tabIndex={0} onPointerDown={resize}
-        onKeyDown={e => { if (e.key === 'ArrowLeft') setRatio(x => Math.max(35, x - 2)); if (e.key === 'ArrowRight') setRatio(x => Math.min(65, x + 2)); }}><span /></div>
-
-      {/* Right Column: Conversational AI Chat & Live Trace Pane */}
-      <section className="agent-pane">
-        <div className="agent-bar">
+  return (
+    <div className="app-shell">
+      <header className="app-header">
+        <div className="brand">
+          <div className="brand-icon">G<span>↗</span></div>
           <div>
-            <span className="eyebrow">VISUAL AGENT INTERFACE</span>
-            <h2>{rightTab === 'chat' ? 'AI 任务对话 (Chat Console)' : 'Agent Trace'}</h2>
-          </div>
-          <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-            <div style={{ display: 'flex', background: '#0e1217', borderRadius: '6px', padding: '2px', border: '1px solid #28303d' }}>
-              <button
-                type="button"
-                className={`button ${rightTab === 'chat' ? 'primary' : 'secondary'}`}
-                style={{ fontSize: '10px', padding: '4px 9px', borderRadius: '4px' }}
-                onClick={() => setRightTab('chat')}
-              >
-                💬 任务对话
-              </button>
-              <button
-                type="button"
-                className={`button ${rightTab === 'trace' ? 'primary' : 'secondary'}`}
-                style={{ fontSize: '10px', padding: '4px 9px', borderRadius: '4px' }}
-                onClick={() => setRightTab('trace')}
-              >
-                ⚡ 实时 Trace 流
-              </button>
-            </div>
-            <span className={`run-status ${busy ? 'is-active' : ''}`}><span className={busy ? 'activity-dot' : 'status-dot'} />{statusLabel[status]}</span>
+            <h1>
+              GamePilot <span className="sub-badge">VISION AGENT SLATE</span>
+            </h1>
           </div>
         </div>
 
-        {rightTab === 'chat' ? (
-          <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-            <ChatAgentConsole
-              messages={chatMessages}
-              onSendMessage={handleSendChatMessage}
-              busy={busy}
+        <div className="header-status-group">
+          <div className="tech-pill active">
+            <span className="status-dot ready" />
+            <span className="mono">{config?.modelId || 'gemini-3.8-flash'}</span>
+          </div>
+          <div className="tech-pill">
+            <span className="activity-dot" />
+            <span>{executionMode === 'simulation' ? '沙盒模拟模式' : '真实虚拟 Xbox'}</span>
+          </div>
+          <div className="tech-pill">
+            <span className="status-dot" style={{ background: busy ? '#38bdf8' : '#22c55e' }} />
+            <span>{statusLabel[status]}</span>
+          </div>
+          <button
+            type="button"
+            className="button secondary"
+            style={{ padding: '3px 8px', fontSize: '10px' }}
+            disabled={busy}
+            onClick={refreshConfig}
+            title={config?.configPath || '重新读取模型配置'}
+          >
+            ↻ 刷新
+          </button>
+        </div>
+      </header>
+
+      {error && (
+        <div className="app-error" role="alert">
+          <span>{error}</span>
+          <button type="button" onClick={() => setError('')} style={{ background: 'none', border: 'none', color: '#fca5a5' }}>✕ 关闭</button>
+        </div>
+      )}
+
+      <main className="workspace" ref={layout} style={{ '--left-width': `${ratio}%` } as React.CSSProperties}>
+        {/* Left Column: Interactive Zelda Arena / Preview with Floating HUD Overlay */}
+        <div className="preview-column">
+          {/* Floating Canvas HUD Overlay */}
+          <div className="floating-hud-overlay">
+            {/* Top Bar: View Switcher Tabs + Keyframes + Compact Window Capture Toolbar */}
+            <div className="hud-top-bar">
+              <div className="hud-pill-group">
+                <div className="tech-tabs">
+                  <button
+                    type="button"
+                    className={`tech-tab-button ${leftView === 'arena' ? 'selected' : ''}`}
+                    onClick={() => setLeftView('arena')}
+                  >
+                    🎮 沙盒试验场
+                  </button>
+                  <button
+                    type="button"
+                    className={`tech-tab-button ${leftView === 'capture' ? 'selected' : ''}`}
+                    onClick={() => setLeftView('capture')}
+                  >
+                    📷 画面捕获
+                  </button>
+                </div>
+
+                {keyFrames.length > 0 && (
+                  <select
+                    aria-label="关键截图"
+                    value={viewObservationId}
+                    style={{
+                      background: '#090d14',
+                      color: '#38bdf8',
+                      border: '1px solid #1e293b',
+                      borderRadius: '4px',
+                      fontSize: '10px',
+                      padding: '2px 6px',
+                    }}
+                    onChange={e => {
+                      setViewObservationId(e.target.value);
+                      setLeftView('capture');
+                      setShowLive(false);
+                      setShowRunImage(true);
+                    }}
+                  >
+                    <option value="">初始输入</option>
+                    {keyFrames.map(frame => (
+                      <option key={frame.image.id} value={frame.image.id}>
+                        {frame.phase === 'before' ? '前' : '后'} · #{frame.image.evidence?.frameSequence}
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </div>
+
+              {/* Compact Window Capture Toolbar Pill */}
+              <div className="hud-pill-group">
+                <select
+                  aria-label="游戏窗口"
+                  value={sourceId}
+                  disabled={busy || capture.status === 'streaming'}
+                  onChange={e => setSourceId(e.target.value)}
+                  style={{
+                    background: '#090d14',
+                    color: '#cbd5e1',
+                    border: '1px solid #1e293b',
+                    borderRadius: '4px',
+                    fontSize: '10px',
+                    padding: '3px 6px',
+                    maxWidth: '170px',
+                  }}
+                >
+                  <option value="">选择游戏窗口 (Cemu / 游戏)</option>
+                  {windows.map(w => (
+                    <option value={w.id} key={w.id}>
+                      {w.title.slice(0, 24)}{w.minimized ? ' [已最小化]' : ''}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  className="button secondary"
+                  style={{ padding: '2px 6px', fontSize: '10px' }}
+                  title="刷新窗口列表"
+                  onClick={refreshWindows}
+                  disabled={busy}
+                >
+                  ↻
+                </button>
+                {capture.status === 'streaming' ? (
+                  <button
+                    type="button"
+                    className="button secondary"
+                    style={{ padding: '2px 8px', fontSize: '10px' }}
+                    onClick={stopPreview}
+                  >
+                    停止预览
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="button secondary"
+                    style={{ padding: '2px 8px', fontSize: '10px' }}
+                    disabled={busy || !sourceId}
+                    onClick={startPreview}
+                  >
+                    开始预览
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="button secondary"
+                  style={{ padding: '2px 8px', fontSize: '10px' }}
+                  disabled={busy || capture.status !== 'streaming'}
+                  onClick={snapshot}
+                >
+                  📷 快照
+                </button>
+              </div>
+            </div>
+
+            {/* Bottom Bar: Telemetry Info + Safe Gamepad Watchdog */}
+            <div className="hud-bottom-bar">
+              <div className="hud-telemetry-card">
+                <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <span className="status-dot ready" />
+                  <span className="mono" style={{ color: '#38bdf8', fontWeight: 600 }}>ZELDA BOTW ARENA</span>
+                </span>
+                <span style={{ color: '#334155' }}>|</span>
+                <span style={{ color: '#94a3b8' }}>
+                  {leftView === 'arena' ? '2.5D 物理闭环沙盒' : '实时游戏采集画面'}
+                </span>
+              </div>
+
+              <div className="hud-telemetry-card">
+                <span style={{ color: '#64748b' }}>MCP 看门狗:</span>
+                <button
+                  type="button"
+                  className="button danger"
+                  style={{ padding: '2px 8px', fontSize: '10px' }}
+                  title="强制归零虚拟手柄所有摇杆与按键"
+                  disabled={!['connecting', 'preparing', 'executing', 'resetting'].includes(inputState.status) && !busy}
+                  onClick={stopInput}
+                >
+                  🛑 强制归零
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Underneath Canvas or Live View */}
+          <div
+            className="preview-pane"
+            style={{
+              position: 'relative',
+              overflow: 'hidden',
+              display: leftView === 'arena' ? 'block' : 'none',
+              height: '100%',
+              border: 'none',
+              background: '#080c14',
+            }}
+          >
+            <ZeldaArenaCanvas />
+          </div>
+
+          <div
+            style={{
+              display: leftView === 'capture' ? 'block' : 'none',
+              height: '100%',
+              background: '#080c14',
+            }}
+          >
+            <InputPreview
+              image={viewObservationId ? keyFrames.find(frame => frame.image.id === viewObservationId)?.image ?? null : showRunImage ? runImage : image}
+              purpose={viewObservationId ? 'evidence' : undefined}
+              used={Boolean(runImage && (showRunImage || image?.id === runImage.id))}
+              busy={busy || snapshotting}
+              onImport={importImage}
+              live={showLive ? capture : undefined}
             />
           </div>
-        ) : (
-          <>
-            <AgentTranscript events={events} status={status} phase={phase} />
-            {busy && ['verified-xbox', 'approach-xbox'].includes(executionMode) && <div className="agent-footer">
-              {executionMode === 'verified-xbox' && <button disabled={!['running', 'paused'].includes(status)} onClick={async () => { const result = await (status === 'paused' ? window.gamepilot.resumeRun(runId) : window.gamepilot.pauseRun(runId)); if (!result.ok) setError(result.error); }}>{status === 'paused' ? '恢复任务' : '暂停任务'}</button>}
-              <button disabled={status === 'canceling'} onClick={async () => { const result = await window.gamepilot.takeoverRun(runId); if (!result.ok) setError(result.error); }}>接管游戏</button>
-            </div>}
-            <AgentComposer executionStrategy={executionStrategy} setExecutionStrategy={setExecutionStrategy} approach={approach} setApproach={setApproach} prompt={prompt} setPrompt={setPrompt} busy={busy} mode={executionMode} successCondition={successCondition} setSuccessCondition={setSuccessCondition} setMode={mode => {
-              setExecutionMode(mode); if (mode !== 'verified-xbox') setAssignment(null);
-              if (mode === 'approach-xbox') setPrompt('接近固定可见目标。根据新帧和独立验证反馈，在运行总预算内执行；验证通过或证据无法确认时停止。');
-              if (mode !== 'simulation' && (!realRuntimeAvailable || (mode === 'verified-xbox' && !verifiedRuntimeAvailable) || (mode === 'approach-xbox' && !approachAvailable))) setError('真实模型工具/验证的 Main/preload 未就绪');
-            }} canceling={status === 'canceling' || starting} canRun={!busy && !inputBusy && !snapshotting && Boolean(prompt.trim())} onRun={start} onCancel={cancel} />
-          </>
-        )}
-
-        <div className="agent-footer">
-          <label>总超时 <select aria-label="总超时" disabled={busy} value={timeout} onChange={e => setTimeoutValue(Number(e.target.value))}><option value={30}>30 秒</option><option value={60}>60 秒</option><option value={120}>120 秒</option></select></label>
-          <button disabled={!runId} onClick={async () => { const result = await window.gamepilot.openLogs(runId); if (!result.ok) setError(result.error); }}>打开日志目录 ↗</button>
         </div>
-      </section>
-    </main>
 
-    <footer className="app-footer">
-      <span><span className="status-dot ready" />本地调试 · 2.5D 塞尔达沙盒 · 零先验手柄闭环</span>
-      <span>{executionMode === 'simulation' ? '模型工具为模拟 · 闭环驱动沙盒林克' : '真实虚拟 Xbox 工具 · F8 停止'}</span>
-      <span className="mono">{runId ? `RUN ${runId.slice(0, 8)}` : 'READY WHEN YOU ARE'}</span>
-    </footer>
-  </div>;
+        {/* Workspace Splitter */}
+        <div
+          className="splitter"
+          role="separator"
+          aria-label="调整左右宽度"
+          aria-orientation="vertical"
+          tabIndex={0}
+          onPointerDown={resize}
+          onKeyDown={e => {
+            if (e.key === 'ArrowLeft') setRatio(x => Math.max(35, x - 2));
+            if (e.key === 'ArrowRight') setRatio(x => Math.min(65, x + 2));
+          }}
+        >
+          <span />
+        </div>
+
+        {/* Right Column: AI Agent Unified Cockpit (Console Stream / Trace / MCP Diagnostics) */}
+        <section className="agent-pane">
+          <div className="agent-bar">
+            <div>
+              <span style={{ fontSize: '9px', color: '#64748b', letterSpacing: '1px', fontFamily: 'monospace' }}>
+                AI COPILOT COCKPIT
+              </span>
+              <h2 style={{ fontSize: '13px', margin: '2px 0 0', fontWeight: 600, color: '#f8fafc' }}>
+                {rightTab === 'chat' ? '智能任务控制台 (Claude Code TUI)' : rightTab === 'trace' ? '实时执行追踪 (Tree Stream Trace)' : '手柄物理输入诊断 (MCP Tools)'}
+              </h2>
+            </div>
+            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+              <div className="tech-tabs">
+                <button
+                  type="button"
+                  className={`tech-tab-button ${rightTab === 'chat' ? 'selected' : ''}`}
+                  onClick={() => setRightTab('chat')}
+                >
+                  💬 任务控制台
+                </button>
+                <button
+                  type="button"
+                  className={`tech-tab-button ${rightTab === 'trace' ? 'selected' : ''}`}
+                  onClick={() => setRightTab('trace')}
+                >
+                  ⚡ 追踪 Trace
+                </button>
+                <button
+                  type="button"
+                  className={`tech-tab-button ${rightTab === 'mcp' ? 'selected' : ''}`}
+                  onClick={() => setRightTab('mcp')}
+                >
+                  🛠️ MCP 诊断
+                </button>
+              </div>
+              <span className={`run-status ${busy ? 'is-active' : ''}`}>
+                <span className={busy ? 'activity-dot' : 'status-dot'} />
+                {statusLabel[status]}
+              </span>
+            </div>
+          </div>
+
+          {rightTab === 'chat' ? (
+            <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+              <ChatAgentConsole
+                messages={chatMessages}
+                onSendMessage={handleSendChatMessage}
+                busy={busy}
+                onCancel={cancel}
+              />
+            </div>
+          ) : rightTab === 'trace' ? (
+            <>
+              <AgentTranscript events={events} status={status} phase={phase} />
+              {busy && ['verified-xbox', 'approach-xbox'].includes(executionMode) && (
+                <div className="agent-footer">
+                  {executionMode === 'verified-xbox' && (
+                    <button
+                      type="button"
+                      disabled={!['running', 'paused'].includes(status)}
+                      onClick={async () => {
+                        const result = await (status === 'paused' ? window.gamepilot.resumeRun(runId) : window.gamepilot.pauseRun(runId));
+                        if (!result.ok) setError(result.error);
+                      }}
+                    >
+                      {status === 'paused' ? '恢复任务' : '暂停任务'}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    disabled={status === 'canceling'}
+                    onClick={async () => {
+                      const result = await window.gamepilot.takeoverRun(runId);
+                      if (!result.ok) setError(result.error);
+                    }}
+                  >
+                    接管游戏
+                  </button>
+                </div>
+              )}
+              <AgentComposer
+                executionStrategy={executionStrategy}
+                setExecutionStrategy={setExecutionStrategy}
+                approach={approach}
+                setApproach={setApproach}
+                prompt={prompt}
+                setPrompt={setPrompt}
+                busy={busy}
+                mode={executionMode}
+                successCondition={successCondition}
+                setSuccessCondition={setSuccessCondition}
+                setMode={mode => {
+                  setExecutionMode(mode);
+                  if (mode !== 'verified-xbox') setAssignment(null);
+                  if (mode === 'approach-xbox') setPrompt('接近固定可见目标。根据新帧和独立验证反馈，在运行总预算内执行；验证通过或证据无法确认时停止。');
+                  if (mode !== 'simulation' && (!realRuntimeAvailable || (mode === 'verified-xbox' && !verifiedRuntimeAvailable) || (mode === 'approach-xbox' && !approachAvailable))) setError('真实模型工具/验证的 Main/preload 未就绪');
+                }}
+                canceling={status === 'canceling' || starting}
+                canRun={!busy && !inputBusy && !snapshotting && Boolean(prompt.trim())}
+                onRun={start}
+                onCancel={cancel}
+              />
+            </>
+          ) : (
+            <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '12px', background: '#090d15' }}>
+              <div style={{ marginBottom: '10px', fontSize: '11px', color: '#94a3b8' }}>
+                🎮 <b>零先验物理输入诊断</b>：可在此直接测试虚拟手柄摇杆偏转、按键触发与 MCP 客户端协议。
+              </div>
+              <InputDebugPanel
+                state={inputState}
+                modelBusy={busy}
+                onConnect={connectInput}
+                onDisconnect={disconnectInput}
+                onExecute={executeInput}
+                onStop={stopInput}
+              />
+            </div>
+          )}
+
+          <div className="agent-footer">
+            <label style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+              总超时
+              <select
+                aria-label="总超时"
+                disabled={busy}
+                value={timeout}
+                onChange={e => setTimeoutValue(Number(e.target.value))}
+              >
+                <option value={30}>30 秒</option>
+                <option value={60}>60 秒</option>
+                <option value={120}>120 秒</option>
+              </select>
+            </label>
+            <button
+              type="button"
+              disabled={!runId}
+              onClick={async () => {
+                const result = await window.gamepilot.openLogs(runId);
+                if (!result.ok) setError(result.error);
+              }}
+            >
+              打开日志目录 ↗
+            </button>
+          </div>
+        </section>
+      </main>
+
+      <footer className="app-footer">
+        <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+          <span className="status-dot ready" />
+          <span>本地闭环 · 2.5D 塞尔达沙盒 · 零先验手柄 MCP</span>
+        </span>
+        <span style={{ color: '#475569' }}>
+          {executionMode === 'simulation' ? '模型动作经由模拟手柄工具闭环驱动沙盒林克' : '真实虚拟 Xbox 设备 · F8 紧急归零'}
+        </span>
+        <span className="mono" style={{ color: '#64748b' }}>
+          {runId ? `RUN ${runId.slice(0, 8)}` : 'SYSTEM STANDBY'}
+        </span>
+      </footer>
+    </div>
+  );
 }

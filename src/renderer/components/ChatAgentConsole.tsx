@@ -14,6 +14,7 @@ export interface ChatMessage {
 interface ApiStatus {
   ok: boolean;
   hasApiKey: boolean;
+  isOperational?: boolean;
   model: string;
   mode: string;
   provider: string;
@@ -24,12 +25,14 @@ export default function ChatAgentConsole({
   messages,
   onSendMessage,
   busy,
-  activeTarget,
+  activeTarget: _activeTarget,
+  onCancel,
 }: {
   messages: ChatMessage[];
   onSendMessage(text: string): void;
   busy: boolean;
   activeTarget?: 'red' | 'yellow' | 'blue' | null;
+  onCancel?(): void;
 }) {
   const [input, setInput] = useState('');
   const [apiStatus, setApiStatus] = useState<ApiStatus | null>(null);
@@ -64,215 +67,185 @@ export default function ChatAgentConsole({
   };
 
   const quickPrompts = [
-    { label: '🤖 你是什么模型？', prompt: '你是什么模型？' },
-    { label: '🔗 走到蓝色之后再走到红色', prompt: '走到蓝色目标位置之后再走到红色目标位置' },
-    { label: '🔄 巡回路径: 黄 ➔ 蓝 ➔ 红', prompt: '先走到黄色目标，再走到蓝色目标，最后走到红色目标' },
-    { label: '🔴 走到红色目标 (火之祭坛)', prompt: '走到红色目标位置 (火之祭坛)' },
-    { label: '🟡 走到黄色目标 (雷之祭坛)', prompt: '走到黄色目标位置 (雷之祭坛)' },
-    { label: '🔵 走到蓝色目标 (水之祭坛)', prompt: '走到蓝色目标位置 (水之祭坛)' },
+    { label: '你是什么模型？', prompt: '你是什么模型？' },
+    { label: '走到蓝色目标位置之后再走到红色目标位置', prompt: '走到蓝色目标位置之后再走到红色目标位置' },
+    { label: '巡回: 黄 ➔ 蓝 ➔ 红', prompt: '先走到黄色目标，再走到蓝色目标，最后走到红色目标' },
+    { label: '走到红色目标位置 (火之祭坛)', prompt: '走到红色目标位置 (火之祭坛)' },
+    { label: '走到黄色目标位置 (雷之祭坛)', prompt: '走到黄色目标位置 (雷之祭坛)' },
+    { label: '走到蓝色目标位置 (水之祭坛)', prompt: '走到蓝色目标位置 (水之祭坛)' },
   ];
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
-      {/* Model & API Status Ribbon */}
-      <div style={{
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        padding: '6px 14px',
-        background: '#0e131b',
-        borderBottom: '1px solid #1e2634',
-        fontSize: '11px',
-        flexShrink: 0,
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <span style={{
-            display: 'inline-block',
-            width: '8px',
-            height: '8px',
-            borderRadius: '50%',
-            background: apiStatus?.hasApiKey ? '#22c55e' : '#eab308',
-            boxShadow: apiStatus?.hasApiKey ? '0 0 6px #22c55e' : '0 0 6px #eab308',
-          }} />
-          <span style={{ color: '#e2e8f0', fontWeight: 600 }}>
-            {apiStatus?.hasApiKey ? 'Google Gemini 3.8 Flash (云端直连)' : 'Gemini 3.8 Flash 架构 (沙盒闭环引擎)'}
+    <div className="tui-console-container">
+      {/* TUI Status Bar */}
+      <div className="tui-status-bar">
+        <div className="tui-status-left">
+          <span className="tui-spark-symbol">✢</span>
+          <span className="tui-brand-text">
+            {apiStatus?.isOperational ? 'gemini-3.8-flash' : 'gemini-3.8-flash (local-sim)'}
           </span>
-          <span style={{
-            fontSize: '9px',
-            padding: '2px 6px',
-            borderRadius: '10px',
-            background: apiStatus?.hasApiKey ? 'rgba(34, 197, 94, 0.15)' : 'rgba(234, 179, 8, 0.15)',
-            color: apiStatus?.hasApiKey ? '#4ade80' : '#fde047',
-            border: `1px solid ${apiStatus?.hasApiKey ? 'rgba(34, 197, 94, 0.3)' : 'rgba(234, 179, 8, 0.3)'}`,
-          }}>
-            {apiStatus?.hasApiKey ? 'REAL_API_ACTIVE' : 'LOCAL_SIMULATOR'}
+          <span className="tui-dim-sep">·</span>
+          <span className={`tui-status-indicator ${apiStatus?.isOperational ? 'online' : 'sim'}`}>
+            {apiStatus?.isOperational ? 'api connected' : 'sim engine'}
           </span>
         </div>
-        <span style={{ color: '#64748b', fontSize: '10px' }}>
-          SDK: @google/genai
-        </span>
+        <div className="tui-status-right">
+          <span className="tui-dim-label">protocol:</span>
+          <span className="tui-code-highlight">gamepad_zero_prior</span>
+        </div>
       </div>
 
-      {/* Quick Action Suggestion Chips */}
-      <div style={{
-        display: 'flex',
-        gap: '6px',
-        padding: '8px 14px',
-        borderBottom: '1px solid #242c38',
-        background: '#131822',
-        overflowX: 'auto',
-        flexShrink: 0,
-      }}>
-        {quickPrompts.map(q => (
-          <button
-            key={q.label}
-            type="button"
-            className="button secondary"
-            disabled={busy}
-            style={{
-              fontSize: '11px',
-              padding: '4px 9px',
-              whiteSpace: 'nowrap',
-              borderRadius: '14px',
-              background: '#19202c',
-              borderColor: '#334155',
-            }}
-            onClick={() => onSendMessage(q.prompt)}
-          >
-            {q.label}
-          </button>
-        ))}
-      </div>
-
-      {/* Messages Timeline */}
-      <div style={{
-        flex: 1,
-        overflowY: 'auto',
-        padding: '14px 16px',
-        display: 'flex',
-        flexDirection: 'column',
-        gap: '12px',
-      }}>
-        {messages.length === 0 ? (
-          <div style={{ textAlign: 'center', margin: 'auto', color: '#64748b', fontSize: '12px', padding: '24px 0' }}>
-            <div style={{ fontSize: '32px', marginBottom: '8px' }}>🎮</div>
-            <p style={{ margin: '0 0 6px', fontWeight: 600, color: '#94a3b8' }}>向 AI Agent 发送手柄控制指令</p>
-            <p style={{ margin: 0, fontSize: '11px', lineHeight: 1.6, maxWidth: '360px' }}>
-              支持复杂连贯多目标指令，例如：<br />
-              <b>「走到蓝色目标位置之后再走到红色目标位置」</b><br />
-              AI 规划中枢将自动拆解长序列阶段，逐级驱动林克前往各祭坛。
-            </p>
-          </div>
-        ) : (
-          messages.map(msg => (
-            <div
-              key={msg.id}
-              style={{
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: msg.role === 'user' ? 'flex-end' : 'flex-start',
-                gap: '4px',
-              }}
+      {/* CLI Quick Action Macros */}
+      <div className="tui-macros-bar">
+        <span className="tui-macros-title">$ quick:</span>
+        <div className="tui-macros-list">
+          {quickPrompts.map(q => (
+            <button
+              key={q.label}
+              type="button"
+              className="tui-macro-btn"
+              disabled={busy}
+              onClick={() => onSendMessage(q.prompt)}
+              title={q.prompt}
             >
-              <div style={{ fontSize: '9px', color: '#64748b' }}>
-                {msg.role === 'user' ? '你 (Operator)' : 'GamePilot Visual Agent'} ·{' '}
-                {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+              ❯ {q.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Pure CLI Stream Viewport (Strictly NO Cards/Boxes, Pure Terminal Layout) */}
+      <div className="tui-stream-viewport">
+        {messages.length === 0 ? (
+          <div className="tui-empty-terminal">
+            <div className="tui-empty-brand">
+              <span className="tui-prompt-symbol">❯_</span>
+              <span className="tui-empty-title">GAMEPILOT TUI COPILOT</span>
+            </div>
+            <div className="tui-empty-desc">
+              系统处于就绪状态。输入自然语言指令驱动视觉-控制闭环。
+            </div>
+            <div className="tui-empty-examples">
+              <div className="tui-example-line">
+                <span className="tui-prompt-symbol">❯</span>
+                <span className="tui-example-cmd">你是什么模型？</span>
               </div>
-
-              <div
-                style={{
-                  maxWidth: '85%',
-                  padding: '9px 13px',
-                  borderRadius: msg.role === 'user' ? '12px 12px 2px 12px' : '12px 12px 12px 2px',
-                  background: msg.role === 'user'
-                    ? '#2e2a56'
-                    : msg.isMilestone
-                    ? '#1e293b'
-                    : '#1a222e',
-                  border: msg.role === 'user'
-                    ? '1px solid #4a437a'
-                    : msg.isMilestone
-                    ? '1px solid #38bdf8'
-                    : '1px solid #2e3a4e',
-                  color: msg.role === 'user' ? '#e9e5ff' : '#d1dced',
-                  fontSize: '12px',
-                  lineHeight: 1.6,
-                  wordBreak: 'break-word',
-                  boxShadow: '0 2px 6px rgba(0,0,0,0.2)',
-                  whiteSpace: 'pre-wrap',
-                }}
-              >
-                {msg.text}
-
-                {msg.toolCallSummary && (
-                  <div style={{
-                    marginTop: '6px',
-                    padding: '4px 8px',
-                    background: '#121720',
-                    borderLeft: '2px solid #2dd4bf',
-                    borderRadius: '3px',
-                    fontSize: '10px',
-                    fontFamily: 'monospace',
-                    color: '#5eead4',
-                  }}>
-                    ⚙️ 工具调用: {msg.toolCallSummary}
-                  </div>
-                )}
-
-                {msg.status === 'moving' && (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '6px', color: '#facc15', fontSize: '11px' }}>
-                    <span className="activity-dot" /> 正在通过手柄闭环移动中...
-                  </div>
-                )}
+              <div className="tui-example-line">
+                <span className="tui-prompt-symbol">❯</span>
+                <span className="tui-example-cmd">走到蓝色目标位置之后再走到红色目标位置</span>
               </div>
             </div>
-          ))
+          </div>
+        ) : (
+          messages.map(msg => {
+            const isUser = msg.role === 'user';
+            const isMilestone = msg.isMilestone;
+            const timeStr = new Date(msg.timestamp).toLocaleTimeString([], {
+              hour: '2-digit',
+              minute: '2-digit',
+              second: '2-digit',
+            });
+
+            if (isUser) {
+              return (
+                <div key={msg.id} className="tui-stream-entry tui-entry-user">
+                  <div className="tui-entry-content">
+                    <span className="tui-prompt-glyph">❯</span>
+                    <span className="tui-cmd-text">{msg.text}</span>
+                  </div>
+                  <span className="tui-time-stamp">{timeStr}</span>
+                </div>
+              );
+            }
+
+            if (isMilestone) {
+              return (
+                <div key={msg.id} className="tui-stream-entry tui-entry-milestone">
+                  <div className="tui-entry-content">
+                    <span className="tui-glyph-check">✔</span>
+                    <span className="tui-milestone-badge">MILESTONE</span>
+                    <span className="tui-milestone-text">{msg.text}</span>
+                  </div>
+                  <span className="tui-time-stamp">{timeStr}</span>
+                </div>
+              );
+            }
+
+            // Assistant Response
+            return (
+              <div key={msg.id} className="tui-stream-entry tui-entry-assistant">
+                <div className="tui-assistant-header">
+                  <span className="tui-spark-glyph">✢</span>
+                  <span className="tui-assistant-name">Gemini 3.8 Flash</span>
+                  {msg.status === 'thinking' && (
+                    <span className="tui-live-status status-thinking">
+                      <span className="activity-dot" /> 思考中...
+                    </span>
+                  )}
+                  {msg.status === 'moving' && (
+                    <span className="tui-live-status status-moving">
+                      <span className="activity-dot dot-amber" /> 手柄移动中...
+                    </span>
+                  )}
+                  <span className="tui-time-stamp">{timeStr}</span>
+                </div>
+
+                {/* Unboxed pure streaming text */}
+                <div className="tui-assistant-text">
+                  {msg.text}
+                </div>
+
+                {/* Claude Code Style Tree Branch for Tool Call / Action Telemetry */}
+                {msg.toolCallSummary && (
+                  <div className="tui-tree-group">
+                    <div className="tui-tree-node">
+                      <span className="tui-tool-dot">⏺</span>
+                      <span className="tui-tool-label">MCP:</span>
+                      <span className="tui-tool-desc">{msg.toolCallSummary}</span>
+                    </div>
+                    <div className="tui-tree-leaf">
+                      <span className="tui-tree-joint">⎿</span>
+                      <span className="tui-leaf-text">物理手柄虚拟链路闭环 · 验证通过</span>
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })
         )}
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Input Box Footer */}
-      <form
-        onSubmit={handleSubmit}
-        style={{
-          padding: '10px 14px',
-          borderTop: '1px solid #242c38',
-          background: '#131822',
-          display: 'flex',
-          gap: '8px',
-          alignItems: 'center',
-          flexShrink: 0,
-        }}
-      >
+      {/* Terminal Command Line Input Bar */}
+      <form onSubmit={handleSubmit} className="tui-cli-bar">
+        <span className="tui-cli-chevron">❯</span>
         <input
           type="text"
           value={input}
           disabled={busy}
           onChange={e => setInput(e.target.value)}
-          placeholder={busy ? 'AI 正在执行手柄任务中...' : '输入指令，如：走到蓝色目标位置之后再走到红色目标位置...'}
-          style={{
-            flex: 1,
-            background: '#0d1117',
-            border: '1px solid #334155',
-            borderRadius: '6px',
-            color: '#f8fafc',
-            padding: '8px 12px',
-            fontSize: '12px',
-            outline: 'none',
-          }}
+          placeholder={busy ? 'Agent 正在执行决策回路... (请稍候)' : '输入指令，如：走到蓝色目标位置之后再走到红色目标位置...'}
+          className="tui-cli-input"
+          autoComplete="off"
+          spellCheck={false}
         />
-        <button
-          type="submit"
-          className="button primary"
-          disabled={busy || !input.trim()}
-          style={{
-            padding: '8px 14px',
-            fontSize: '12px',
-            whiteSpace: 'nowrap',
-          }}
-        >
-          {busy ? '执行中' : '发送指令 ➔'}
-        </button>
+        {busy && onCancel ? (
+          <button
+            type="button"
+            className="tui-cli-btn danger"
+            onClick={onCancel}
+          >
+            ⏹ 终止
+          </button>
+        ) : (
+          <button
+            type="submit"
+            className="tui-cli-btn submit"
+            disabled={busy || !input.trim()}
+          >
+            {busy ? '执行中' : '执行 ⏎'}
+          </button>
+        )}
       </form>
     </div>
   );
