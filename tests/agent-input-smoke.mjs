@@ -78,15 +78,16 @@ try {
   await expect(page.getByAltText('游戏窗口实时画面')).toBeVisible({ timeout: 15000 });
   await page.getByRole('combobox', { name: '模型工具模式' }).selectOption('virtual-xbox');
   await expect(page.getByRole('button', { name: /运行一次/ })).toBeDisabled();
-  await page.locator('.input-debug-panel>summary').click();
+  await page.getByRole('button', { name: /MCP 诊断/ }).click();
   await page.getByRole('combobox', { name: '手柄服务模式' }).selectOption('virtual-xbox');
-  await page.getByRole('button', { name: '连接手柄服务' }).click();
+  await page.getByRole('button', { name: '连接虚拟手柄' }).click();
   await expect(page.locator('.input-summary')).toContainText('已连接', { timeout: 15000 });
+  await page.getByRole('button', { name: /追踪 Trace/ }).click();
   assert.equal(await app.evaluate(({ globalShortcut }) => globalShortcut.isRegistered('Control+Shift+F12')), true);
   const run = async () => {
     await app.evaluate(() => { process.env.GAMEPILOT_TEST_FOCUS = 'ready'; });
     await page.getByRole('button', { name: /运行一次/ }).click();
-    await expect(page.locator('.input-summary')).toContainText('Agent 3 秒准备');
+    await expect.poll(async () => (await page.evaluate(async () => (await window.gamepilot.getInputState()).value)).status).toBe('preparing');
   };
   if (!process.env.GAMEPILOT_TEST_P3_ONLY) {
   await run();
@@ -99,8 +100,8 @@ try {
   const disk = JSON.parse(await readFile(join(stateRoot, 'runs', snapshot.runId, 'manifest.json'), 'utf8'));
   assert.equal(disk.input.id, snapshot.input.id); assert.equal(disk.simulated, false);
   assert.ok(snapshot.events.find(e => e.type === 'observation').sequence > snapshot.events.find(e => e.type === 'input_preparing').sequence);
-  await page.locator('.tool-result details>summary').click();
-  await expect(page.locator('.tool-result pre')).toContainText('receipt');
+  await page.getByRole('button', { name: /展开全部/ }).click();
+  await expect(page.locator('.tui-raw-json-block').filter({ hasText: 'receipt' }).first()).toBeVisible();
   const parity = (await readFile(join(stateRoot, 'runs', snapshot.runId, 'events.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
   assert.deepEqual(parity, snapshot.events);
   await mkdir('artifacts', { recursive: true }); await page.screenshot({ path: 'artifacts/p2c-agent-input.png' });
@@ -283,8 +284,9 @@ try {
   assert.equal((await page.evaluate(async () => (await window.gamepilot.getInputState()).value)).neutral, true);
   p3Reports.push({ scenario: 'approach-stall-cancel', summary: p3Canceled.summary });
   await writeFile('artifacts/p3-agent-ui-check.json', JSON.stringify({ testOnly: true, physicalInputVerified: false, backend: 'Python dry-run', reports: p3Reports }, null, 2));
+  await page.getByRole('button', { name: /MCP 诊断/ }).click();
   if (!(await page.locator('.input-debug-panel').evaluate(el => el.open))) await page.locator('.input-debug-panel>summary').click();
-  await page.getByRole('button', { name: '断开手柄服务' }).click();
+  await page.getByRole('button', { name: '断开手柄', exact: true }).click();
   await expect(page.locator('.input-summary')).toContainText('断开设备');
   await expect.poll(() => app.evaluate(({ globalShortcut }) => globalShortcut.isRegistered('Control+Shift+F12'))).toBe(false);
   console.log(process.env.GAMEPILOT_TEST_P3_ONLY ? 'P3 Electron passed: feedback correction, lost-target stop, tracker cancellation, trace audit and stale-state rejection. ZERO physical controller actions.' : 'P3 feedback, target loss, tracker cancellation, trace audit; P4 campaign binding / pause-resume / cumulative budget / takeover and P2-C/P2-D Electron passed: native fresh capture → real Pi → injected dry Python receipt → independent verifier; passed/failed/inconclusive, read-only wait, screenshots/trace parity, verifier cancellation. ZERO physical controller actions.');

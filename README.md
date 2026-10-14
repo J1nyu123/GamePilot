@@ -1,5 +1,11 @@
 # GamePilot 视觉任务、P4 验收与 P3 反馈实验
 
+已合入 GamePilot-dev 的 UI、2.5D 沙盒、任务控制台及 MCP 工具。默认 `npm run dev` / `npm start` 仍启动 Electron，保留真实窗口采集、手柄、P3/P4 与日志审计。右侧“追踪 Trace”配置任务，“MCP 诊断”连接和调试手柄。
+
+Web 沙盒：`npm run dev:web` 后打开 http://127.0.0.1:3000；生产运行先 `npm run build:web`，再 `npm run start:web`。Web 构建仅写入 `dist/web`，不会覆盖 `dist/main`、`dist/preload`、`dist/renderer`。可选 `GEMINI_API_KEY` 和 `GEMINI_MODEL` 用于云端文本规划；未配置或请求失败时使用本地规则与预设回复。
+
+Electron 中点击“沙盒试验场”也可离线体验画布模拟，切回“画面捕获”使用实机。沙盒和实机使用独立接口；沙盒坐标是画布像素、结果始终 `simulated=true / gameOutcome=unverified`，不计入实机验收。独立 MCP 服务 `npm run mcp:gamepad` 当前仅提供内存模拟；真实输入继续通过 Electron 的租约、焦点守卫、F8 及归零 ACK 服务执行。详见 [合并记录](docs/gamepilot-dev-integration.md)。
+
 P3 已新增独立的 `approach_target` 反馈技能、目标框/有效期估计、逐段纠偏和证据审计。右侧选择“P3 目标接近实验”，填写目标、屏幕区域/占比及成功条件。默认仍为模拟；P3 与 P4 实机验收均未完成。详见 [P3 使用与边界](docs/p3-approach-target.md)。
 
 P4 开发新增固定批次验收、35 项预登记、人工复核/报告，以及目标验证任务的暂停、恢复和安全接管。游戏已指定为《塞尔达传说：旷野之息》初始存档；具体场景/地标尚待填写，**尚未通过 P4 实机验收**。入口与命令见 [P4 验收说明](docs/p4-acceptance.md)，配置从 `benchmarks/botw-initial.template.json` 复制。

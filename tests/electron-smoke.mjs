@@ -57,8 +57,8 @@ try {
   await expect(page.getByRole('button', { name: '替换图片' })).toBeDisabled();
   await expect(page.locator('.run-status')).toHaveText('模拟链路通过', { timeout: 15000 });
   await expect(page.getByText('CYCLE 02')).toBeVisible();
-  await page.locator('.tool-toggle').click();
-  await expect(page.locator('.tool-item > .json-block')).toContainText('durationMs');
+  await page.getByRole('button', { name: /展开全部/ }).click();
+  await expect(page.locator('.tui-raw-json-block').filter({ hasText: 'durationMs' }).first()).toBeVisible();
   let snapshot = await page.evaluate(async () => (await window.gamepilot.getSnapshot()).value);
   const dir = resolve('runs', snapshot.runId);
   const disk = (await readFile(join(dir, 'events.jsonl'), 'utf8')).trim().split('\n').map(x => JSON.parse(x));
@@ -93,7 +93,7 @@ try {
   await page.getByRole('button', { name: '■ 取消运行' }).click();
   await expect(page.locator('.run-status')).toHaveText('已取消');
   scenario = 'cancel-tool'; await run();
-  await expect(page.locator('.tool-toggle')).toBeVisible();
+  await expect(page.locator('.tui-node-title').filter({ hasText: 'MCP · move_for' }).first()).toBeVisible();
   await page.getByRole('button', { name: '■ 取消运行' }).click();
   await expect(page.locator('.run-status')).toHaveText('已取消');
   snapshot = await page.evaluate(async () => (await window.gamepilot.getSnapshot()).value);
@@ -101,11 +101,11 @@ try {
   scenario = 'long'; await run();
   await expect(page.locator('.model-text')).toBeVisible();
   await page.locator('.transcript').evaluate(el => { el.scrollTop = 0; el.dispatchEvent(new Event('scroll')); });
-  await expect(page.getByRole('button', { name: '↓ 有新事件' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '↓ 新的 Trace 执行流输出' })).toBeVisible();
   await expect(page.locator('.run-status')).toHaveText('模拟链路通过');
   const scrollTop = await page.locator('.transcript').evaluate(el => el.scrollTop);
   assert.ok(scrollTop < 50);
-  await page.getByRole('button', { name: '↓ 有新事件' }).click();
+  await page.getByRole('button', { name: '↓ 新的 Trace 执行流输出' }).click();
   const separator = page.getByRole('separator', { name: '调整左右宽度' });
   const initialWidth = await page.locator('.preview-column').evaluate(el => el.getBoundingClientRect().width);
   const handle = await separator.boundingBox();
