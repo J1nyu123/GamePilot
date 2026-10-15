@@ -7,6 +7,7 @@ export const statusLabel: Record<RunStatus, string> = {
   pausing: '正在暂停',
   paused: '已暂停',
   idle: '等待任务',
+  completed: '回复完成',
   running: '运行中',
   canceling: '正在取消',
   protocol_passed: '模拟链路通过',
@@ -41,7 +42,7 @@ function getEventStage(e: AgentEvent): StageKind {
   if (['observation', 'observation_post', 'input_preparing', 'tracking_state'].includes(e.type)) {
     return 'OBSERVE';
   }
-  if (['model_text', 'model_end', 'approach_decision', 'tool_arguments_delta'].includes(e.type)) {
+  if (['intent_resolved', 'model_text', 'model_end', 'approach_decision', 'tool_arguments_delta'].includes(e.type)) {
     return 'DECIDE';
   }
   if (['tool_execution_start', 'tool_execution_end', 'skill_released', 'input_released', 'skill_execution_start', 'approach_step', 'runner_execution'].includes(e.type)) {
@@ -57,6 +58,8 @@ function getEventSummary(e: AgentEvent): { title: string; subtitle?: string; hig
   switch (e.type) {
     case 'user_message':
       return { title: '指令下达', subtitle: e.text || '' };
+    case 'intent_resolved':
+      return { title: '消息意图识别', subtitle: e.text };
     case 'input_preparing':
       return { title: '输入就绪准备', subtitle: e.text || '等待输入通道就绪' };
     case 'observation':
@@ -67,7 +70,7 @@ function getEventSummary(e: AgentEvent): { title: string; subtitle?: string; hig
       };
     case 'observation_post':
       return {
-        title: '动作后截图取证',
+        title: '新画面取证',
         subtitle: e.observationId ? `帧标识 #${e.observationId.slice(0, 8)}` : '新动作完成帧',
       };
     case 'model_text': {

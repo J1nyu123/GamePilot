@@ -14,6 +14,18 @@ export async function executeGamepadTool(
   backend: ControllerBackend
 ): Promise<{ ok: boolean; message: string; state?: any }> {
   try {
+    const definition = GAMEPAD_TOOL_DEFINITIONS.find(tool => tool.name === toolName);
+    if (!definition) throw new Error(`Unknown gamepad tool: ${toolName}`);
+    if (!args || typeof args !== 'object' || Array.isArray(args)) throw new Error('Tool arguments must be an object');
+    for (const field of definition.parameters.required ?? []) if (!Object.hasOwn(args, field)) throw new Error(`Missing parameter: ${field}`);
+    for (const [field, value] of Object.entries(args)) {
+      const schema = definition.parameters.properties[field] as { type: string; enum?: readonly unknown[]; minimum?: number; maximum?: number } | undefined;
+      if (!schema) throw new Error(`Unknown parameter: ${field}`);
+      if (schema.type === 'string' && typeof value !== 'string' || schema.type === 'number' && (typeof value !== 'number' || !Number.isFinite(value))
+        || schema.type === 'integer' && !Number.isInteger(value) || schema.enum && !schema.enum.includes(value)
+        || schema.minimum !== undefined && (typeof value !== 'number' || value < schema.minimum)
+        || schema.maximum !== undefined && (typeof value !== 'number' || value > schema.maximum)) throw new Error(`Invalid parameter: ${field}`);
+    }
     switch (toolName) {
       case 'gamepad_press_button': {
         const button = args.button as XboxButton;

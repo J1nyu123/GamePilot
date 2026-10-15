@@ -23,6 +23,7 @@ export function createGamepadMcpServer(backend?: ControllerBackend): Server {
       },
     }
   );
+  server.onclose = () => controller.close();
 
   // List all 6 zero-prior atomic gamepad tools
   server.setRequestHandler(ListToolsRequestSchema, async () => {
@@ -69,6 +70,7 @@ export function createGamepadMcpServer(backend?: ControllerBackend): Server {
 if (process.argv[1] && process.argv[1].endsWith('gamepad-mcp-server.ts')) {
   const server = createGamepadMcpServer();
   const transport = new StdioServerTransport();
+  process.stdin.once('end', () => { void server.close(); });
   server.connect(transport).then(() => {
     console.error('[VirtualGamepad-MCP] Server listening over stdio...');
   }).catch(err => {

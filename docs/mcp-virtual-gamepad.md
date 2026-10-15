@@ -1,92 +1,19 @@
-# Zero-Prior Virtual Gamepad MCP Tool & Skill
+# 模拟手柄 MCP
 
-An experimental **Model Context Protocol (MCP)** tool exposing six controller primitives through an in-memory emulator. Native MCP input is not enabled in this integration: the imported bridge does not validate Python lease generations or execution/reset acknowledgements. Real controller input remains available through the existing Electron service; see [integration notes](gamepilot-dev-integration.md).
+当前 MCP 只维护内存状态，不连接 Python、ViGEm 或真实 Xbox。Electron Runtime、手动诊断和独立 stdio 服务复用 tool-definitions.ts、gamepad-skill.ts、controller-backend.ts。
 
----
+六种工具：
+- gamepad_press_button
+- gamepad_release_button
+- gamepad_set_stick（左右摇杆及完整 X/Y 矢量）
+- gamepad_set_trigger（左右扳机）
+- gamepad_reset_all
+- gamepad_get_state
 
-## 1. 核心设计原则 (Zero Game Priors)
+参数在输入写入之前统一验证，拒绝未知字段、非法按钮、NaN、越界轴值及非法时长。显式 duration_ms 为 20–5000ms，省略时由最长 10 秒看门狗归零。重复写入同一轴或按钮会替换原定时器。
 
-1. **绝对零先验（Zero Game Semantics）**：
-   - 工具名及参数中**没有任何游戏专用动词**（无 `attack`, `dodge`, `climb`, `jump`, `walk_to` 等）。
-   - 只暴露纯净的硬件级物理操作：按键按下、按键释放、摇杆连续模拟量偏转 `[-1.0, 1.0]`、扳机深度 `[0.0, 1.0]`、限时保持以及硬件归零。
-   - AI Agent 必须自行理解视觉画面并将意图转化为物理按键与轴矢量的序列组合。
+Electron 每次任务持有独占模拟控制权。任务工具顺序执行；参数流不直接执行。取消、超时与任务结束会归零所有按钮、摇杆和扳机，并清除定时器，然后发布结束事件。手动诊断支持全部六种工具，模型任务期间不能手动操作。
 
-2. **安全看门狗（Hardware Auto-Neutral Watchdog）**：
-   - 任何带有 `duration_ms` 的操作会在到达时限后自动硬件归零。
-   - 所有持续按下的操作均受最长 10 秒看门狗监控，防止大模型中断或异常退出导致按键粘连或角色坠崖。
-   - 提供最高优先级的 `gamepad_reset_all` 应急归零指令。
+独立 stdio 服务运行 npm run mcp:gamepad。它有自己的内存状态，与 Electron 进程不会共享设备状态；两者使用相同实现。外部 MCP 客户端应在 GamePilot 根目录运行 node --import tsx src/mcp/gamepad-mcp-server.ts。
 
-3. **双层驱动架构（Dual-Layer Architecture）**：
-   - **Windows 实机输入**：使用 Electron 既有 **ViGEmBus / vgamepad** 服务，受租约、焦点守卫、F8 和归零确认保护；独立 MCP 目前不连接该设备。
-   - **MCP 模拟模式**：所有平台均使用内存手柄仿真器；`neutral` 表示模拟状态，不是硬件归零 ACK。
-
----
-
-## 2. 工具列表 (MCP Tool Definitions)
-
-| 工具名称 | 参数 | 说明 |
-| :--- | :--- | :--- |
-| `gamepad_press_button` | `button`: Xbox 按键枚举<br>`duration_ms` (可选): 20~5000 毫秒 | 按下指定按键。若指定持续时间，则在到期后自动释放；若省略则持续按住。 |
-| `gamepad_release_button` | `button`: Xbox 按键枚举 | 释放指定按键回弹至未按下状态。 |
-| `gamepad_set_stick` | `stick`: `'left'` \| `'right'`<br>`x`: `-1.0` ~ `1.0`<br>`y`: `-1.0` ~ `1.0`<br>`duration_ms` (可选): 20~5000 毫秒 | 偏转左/右模拟摇杆。若指定持续时间，到期后自动回中至 `(0, 0)`。 |
-| `gamepad_set_trigger` | `trigger`: `'left'` \| `'right'`<br>`value`: `0.0` ~ `1.0`<br>`duration_ms` (可选): 20~5000 毫秒 | 压下左扳机 (LT) 或右扳机 (RT)。若指定持续时间，到期后自动释放回 `0.0`。 |
-| `gamepad_reset_all` | 无 | **安全复位**：立刻释放所有按键、摇杆回中、扳机归零。 |
-| `gamepad_get_state` | 无 | 获取当前手柄实时状态快照（已按按键、摇杆坐标、扳机量、是否安全居中）。 |
-
-### 支持的物理按键列表 (`XBOX_BUTTONS`)
-- 基础功能键：`A`, `B`, `X`, `Y`
-- 缓冲肩键：`LB`, `RB`
-- 系统与菜单键：`BACK`, `START`
-- 摇杆下压键：`LS` (左摇杆下压), `RS` (右摇杆下压)
-- 方向十字键：`DPAD_UP`, `DPAD_DOWN`, `DPAD_LEFT`, `DPAD_RIGHT`
-
----
-
-## 3. 启动与集成指南
-
-### A. 作为标准 MCP 服务使用 (Claude Desktop / Cursor / Cline)
-
-在客户端的 MCP 配置文件（例如 `claude_desktop_config.json` 或 Cursor 设置）中添加：
-
-```json
-{
-  "mcpServers": {
-    "virtual-gamepad": {
-      "command": "node",
-      "args": ["--import", "tsx", "<项目根目录>/src/mcp/gamepad-mcp-server.ts"]
-    }
-  }
-}
-```
-
-或者使用 npm script 启动：
-```bash
-npm run mcp:gamepad
-```
-
-### B. 在 Node.js / TypeScript Agent 中作为原生 Skill 使用
-
-```typescript
-import { ControllerBackend } from './src/mcp/controller-backend';
-import { GAMEPAD_TOOL_DEFINITIONS, executeGamepadTool } from './src/mcp/gamepad-skill';
-
-const controller = new ControllerBackend();
-
-// 1. 将 GAMEPAD_TOOL_DEFINITIONS 传给 OpenAI / Gemini / Claude 工具声明列表
-const tools = GAMEPAD_TOOL_DEFINITIONS;
-
-// 2. 当大模型触发工具调用时：
-const result = await executeGamepadTool('gamepad_press_button', {
-  button: 'A',
-  duration_ms: 200,
-}, controller);
-
-console.log(result.message); // Button 'A' pressed for 200ms (auto-release scheduled).
-```
-
-### C. 自动化单元测试验证
-
-运行专项单元测试以验证零先验约束与硬件归零时序：
-```bash
-npm run test:mcp
-```
+所有回执描述模拟控制器状态，不代表被捕获的游戏/页面发生变化。

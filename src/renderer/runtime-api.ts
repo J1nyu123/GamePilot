@@ -1,8 +1,2 @@
-import { createWebGamepilot } from './web-adapter';
-
-// Capture the preload API before main.tsx installs the browser fallback.
 export const desktopApi = window.gamepilot;
-let sandboxApi: ReturnType<typeof createWebGamepilot> | undefined;
-export function getSandboxApi() {
-  return sandboxApi ??= createWebGamepilot();
-}
+if (!desktopApi) throw new Error('请使用 npm run dev 或 npm start 启动 Electron 工作区');

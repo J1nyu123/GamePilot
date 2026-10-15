@@ -13,3 +13,6 @@ __pycache__/
 *.pem
 *.key
 .pi-agent/
+
+.venv/
+.cache/

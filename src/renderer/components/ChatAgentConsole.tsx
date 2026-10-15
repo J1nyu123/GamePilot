@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
+import type { ConnectionStatus } from '../../contracts/model-connection';
 
 export interface ChatMessage {
   id: string;
@@ -6,64 +7,34 @@ export interface ChatMessage {
   text: string;
   timestamp: number;
   status?: 'thinking' | 'moving' | 'completed' | 'error';
-  targetColor?: 'red' | 'yellow' | 'blue';
   toolCallSummary?: string;
   isMilestone?: boolean;
-}
-
-interface ApiStatus {
-  ok: boolean;
-  hasApiKey: boolean;
-  isOperational?: boolean;
-  model: string;
-  mode: string;
-  provider: string;
-  message: string;
 }
 
 export default function ChatAgentConsole({
   messages,
   onSendMessage,
   busy,
-  activeTarget: _activeTarget,
   onCancel,
-  sandbox,
   modelId,
   canSend,
+  connectionStatus,
 }: {
   messages: ChatMessage[];
   onSendMessage(text: string): void;
   busy: boolean;
-  activeTarget?: 'red' | 'yellow' | 'blue' | null;
   onCancel?(): void;
-  sandbox: boolean;
   modelId?: string;
   canSend: boolean;
+  connectionStatus?: ConnectionStatus;
 }) {
   const [input, setInput] = useState('');
-  const [apiStatus, setApiStatus] = useState<ApiStatus | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  useEffect(() => {
-    if (!sandbox) { setApiStatus(null); return; }
-    fetch('/api/gemini/status')
-      .then(res => res.json())
-      .then(data => setApiStatus(data))
-      .catch(() => {
-        setApiStatus({
-          ok: false,
-          hasApiKey: false,
-          model: 'local-sandbox-planner',
-          mode: 'sandbox-simulation',
-          provider: '@google/genai',
-          message: '本地仿真引擎运行中',
-        });
-      });
-  }, [sandbox]);
 
   const handleSubmit = (e?: React.FormEvent) => {
     e?.preventDefault();
@@ -74,12 +45,10 @@ export default function ChatAgentConsole({
   };
 
   const quickPrompts = [
-    { label: '你是什么模型？', prompt: '你是什么模型？' },
-    { label: '走到蓝色目标位置之后再走到红色目标位置', prompt: '走到蓝色目标位置之后再走到红色目标位置' },
-    { label: '巡回: 黄 ➔ 蓝 ➔ 红', prompt: '先走到黄色目标，再走到蓝色目标，最后走到红色目标' },
-    { label: '走到红色目标位置 (火之祭坛)', prompt: '走到红色目标位置 (火之祭坛)' },
-    { label: '走到黄色目标位置 (雷之祭坛)', prompt: '走到黄色目标位置 (雷之祭坛)' },
-    { label: '走到蓝色目标位置 (水之祭坛)', prompt: '走到蓝色目标位置 (水之祭坛)' },
+    { label: '描述当前画面', prompt: '描述截图中可见的界面和场景，不发送模拟输入。' },
+    { label: '走到柱子处', prompt: '走到前面柱子处。先截图确认目标，短步行动后观察结果。' },
+    { label: '模拟左摇杆', prompt: '观察画面，模拟左摇杆向左偏转 200 毫秒，然后归零。' },
+    { label: '查询模拟手柄', prompt: '调用 gamepad_get_state，解释模拟手柄当前状态。' },
   ];
 
   return (
@@ -89,16 +58,16 @@ export default function ChatAgentConsole({
         <div className="tui-status-left">
           <span className="tui-spark-symbol">✢</span>
           <span className="tui-brand-text">
-            {sandbox ? apiStatus?.isOperational ? apiStatus.model : 'local-sandbox-planner' : modelId || '模型配置待就绪'}
+            {modelId || '模型配置待就绪'}
           </span>
           <span className="tui-dim-sep">·</span>
-          <span className={`tui-status-indicator ${apiStatus?.isOperational ? 'online' : 'sim'}`}>
-            {sandbox ? apiStatus?.isOperational ? 'cloud planning · simulated control' : 'sandbox simulation' : 'Electron task runtime'}
+          <span className={`tui-status-indicator ${connectionStatus === 'connected' ? 'online' : 'sim'}`}>
+            {connectionStatus === 'connected' ? 'API connected · Electron' : 'Electron task runtime'}
           </span>
         </div>
         <div className="tui-status-right">
           <span className="tui-dim-label">protocol:</span>
-          <span className="tui-code-highlight">gamepad_zero_prior</span>
+          <span className="tui-code-highlight">intent → chat / observe / act</span>
         </div>
       </div>
 
@@ -212,7 +181,7 @@ export default function ChatAgentConsole({
                     </div>
                     <div className="tui-tree-leaf">
                       <span className="tui-tree-joint">⎿</span>
-                      <span className="tui-leaf-text">{sandbox ? '画布模拟调用 · 实机未验证' : '执行状态与独立验证见 Trace'}</span>
+                      <span className="tui-leaf-text">{'工具回执、截图与运行状态见 Trace'}</span>
                     </div>
                   </div>
                 )}
@@ -232,7 +201,7 @@ export default function ChatAgentConsole({
           disabled={busy}
           onChange={e => setInput(e.target.value)}
           onKeyDown={e => { if (e.key === 'Enter' && (e.nativeEvent.isComposing || e.keyCode === 229)) e.preventDefault(); }}
-          placeholder={busy ? 'Agent 正在执行决策回路... (请稍候)' : '输入指令，如：走到蓝色目标位置之后再走到红色目标位置...'}
+          placeholder={busy ? 'Agent 正在运行…' : '随便聊聊，或让我观察、操作游戏…'}
           className="tui-cli-input"
           autoComplete="off"
           spellCheck={false}

@@ -1,5 +1,17 @@
 @import "tailwindcss";
 
+.model-settings-backdrop { position: fixed; inset: 0; z-index: 100; background: #020617b8; display: grid; place-items: center; padding: 20px; }
+.model-settings { width: min(560px, 100%); max-height: 90dvh; overflow: auto; padding: 24px; background: #0f172a; border: 1px solid #334155; border-radius: 12px; color: #e2e8f0; }
+.model-settings-heading, .model-settings-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.model-settings h2 { font-size: 18px; margin: 0; }
+.model-settings p { font-size: 13px; line-height: 1.7; color: #94a3b8; }
+.model-settings label { display: grid; gap: 6px; font-size: 13px; margin-top: 16px; }
+.model-settings input:not([type=checkbox]) { width: 100%; background: #020617; color: #e2e8f0; padding: 10px; border: 1px solid #334155; border-radius: 6px; }
+.model-settings small { display: block; color: #94a3b8; font-size: 11px; margin-top: 6px; line-height: 1.6; }
+.model-settings .model-image-option { display: flex; align-items: center; gap: 8px; }
+.model-settings .model-connection-message { padding: 10px; border-radius: 6px; background: #020617; color: #7dd3fc; }
+.model-settings .model-connection-message.error { color: #fca5a5; }
+
 @theme {
   --color-surface: #090d14;
   --color-panel: #0f172a;
@@ -1361,11 +1373,6 @@ button:focus-visible, textarea:focus-visible, select:focus-visible, input:focus-
 
 /* Retained task configuration, evidence and desktop component styling. */
 .pane-bar { padding: 12px 16px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid #1e293b; }
-.acceptance-presets summary { cursor: pointer; color: #bdb5ff; }
-.acceptance-presets label { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
-.acceptance-presets select { max-width: 100%; background: #101318; color: #e5e7eb; border: 1px solid #3a4150; padding: 5px; border-radius: 4px; }
-.acceptance-presets p, .acceptance-presets small { display: block; line-height: 1.6; margin: 6px 0; }
-.acceptance-presets .button { padding: 5px 8px; font-size: 10px; }
 .input-summary { flex: 1; color: #819a8c; }
 .input-controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 12px 0 8px; }
 .input-controls select,.input-controls input { background: #101817; color: #bbcdc1; border: 1px solid #40504a; border-radius: 4px; padding: 6px; font-size: 10px; }
@@ -1407,13 +1414,6 @@ button:focus-visible, textarea:focus-visible, select:focus-visible, input:focus-
 .p4-presets input { flex: 1; min-width: 0; background: #191e27; border: 1px solid #343b49; border-radius: 4px; color: #d6dce6; padding: 6px; }
 .p4-presets button { border: 1px solid #343b49; border-radius: 4px; background: #191e27; color: #d6dce6; padding: 5px 8px; margin: 2px 4px 2px 0; }
 .p4-presets p { line-height: 1.6; }
-.approach-setup { max-height: 175px; overflow: auto; margin: 8px 0; color: #aab4c5; font-size: 10px; }
-.approach-setup summary { color: #bdb5ff; cursor: pointer; }
-.approach-setup p { line-height: 1.5; margin: 6px 0; }
-.approach-setup label { display: flex; align-items: center; gap: 6px; margin: 5px 0; }
-.approach-setup input { background: #101318; color: #d6dce6; border: 1px solid #343b49; padding: 4px; border-radius: 4px; min-width: 0; flex: 1; }
-.approach-region { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
-.approach-region input, .approach-setup input[type=number] { width: 55px; flex: 0 1 55px; }
 .approach-progress { font-size: 11px; line-height: 1.6; padding: 8px; border-left: 2px solid #8275d7; background: #181a27; margin: 6px 0; }
 .approach-progress p { overflow-wrap: anywhere; }
 .composer { max-height: 48vh; overflow-y: auto; scrollbar-width: thin; }
@@ -1421,3 +1421,6 @@ button:focus-visible, textarea:focus-visible, select:focus-visible, input:focus-
 .composer .goal-condition textarea { min-height: 50px; }
 .composer { max-height: 40vh; }
 .composer { flex-shrink: 1; min-height: 120px; max-height: 48%; }
+
+.execution-mode { display: flex; align-items: center; gap: 8px; padding: 8px 20px; color: #94a3b8; font-size: 12px; }
+.execution-mode select { background: #101318; color: #e2e8f0; border: 1px solid #334155; border-radius: 4px; padding: 4px; }

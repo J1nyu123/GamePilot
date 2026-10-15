@@ -24,7 +24,7 @@ const server = createServer(async (req, res) => {
     // Long stream exercises scroll behavior and preserves incremental model feedback.
     send({ content: scenario === 'long' ? text.repeat(120) : text });
     if (scenario === 'long') await new Promise(r => setTimeout(r, 500));
-    send({ tool_calls: [{ index: 0, id: 'ui-call', type: 'function', function: { name: 'move_for', arguments: JSON.stringify({ direction: scenario === 'invalid' ? 'invalid' : 'left', durationMs: scenario === 'cancel-tool' ? 2000 : 200 }) } }] });
+    send({ tool_calls: [{ index: 0, id: 'ui-call', type: 'function', function: { name: 'gamepad_set_stick', arguments: JSON.stringify({ stick: scenario === 'invalid' ? 'invalid' : 'left', x: -.5, y: 0, duration_ms: scenario === 'cancel-tool' ? 2000 : 200 }) } }] });
     send({}, 'tool_calls');
   }
   res.end('data: [DONE]\n\n');
@@ -58,7 +58,7 @@ try {
   await expect(page.locator('.run-status')).toHaveText('模拟链路通过', { timeout: 15000 });
   await expect(page.getByText('CYCLE 02')).toBeVisible();
   await page.getByRole('button', { name: /展开全部/ }).click();
-  await expect(page.locator('.tui-raw-json-block').filter({ hasText: 'durationMs' }).first()).toBeVisible();
+  await expect(page.locator('.tui-raw-json-block').filter({ hasText: 'duration_ms' }).first()).toBeVisible();
   let snapshot = await page.evaluate(async () => (await window.gamepilot.getSnapshot()).value);
   const dir = resolve('runs', snapshot.runId);
   const disk = (await readFile(join(dir, 'events.jsonl'), 'utf8')).trim().split('\n').map(x => JSON.parse(x));
@@ -93,7 +93,7 @@ try {
   await page.getByRole('button', { name: '■ 取消运行' }).click();
   await expect(page.locator('.run-status')).toHaveText('已取消');
   scenario = 'cancel-tool'; await run();
-  await expect(page.locator('.tui-node-title').filter({ hasText: 'MCP · move_for' }).first()).toBeVisible();
+  await expect(page.locator('.tui-node-title').filter({ hasText: 'MCP · gamepad_set_stick' }).first()).toBeVisible();
   await page.getByRole('button', { name: '■ 取消运行' }).click();
   await expect(page.locator('.run-status')).toHaveText('已取消');
   snapshot = await page.evaluate(async () => (await window.gamepilot.getSnapshot()).value);
@@ -126,6 +126,25 @@ try {
   await app.evaluate(() => { process.env.ARK_API_KEY = 'test-ui-secret'; });
   await page.getByRole('button', { name: /刷新配置/ }).click();
   await expect(page.getByRole('button', { name: /运行一次/ })).toBeEnabled();
+  // Diagnostics use the same simulated MCP backend, including the right stick and triggers.
+  await page.getByRole('button', { name: /MCP 诊断/ }).click();
+  await page.getByLabel('MCP 工具选择').selectOption('gamepad_set_stick');
+  await page.getByLabel('摇杆类型').selectOption('right');
+  await page.getByLabel('摇杆X轴').fill('0.25'); await page.getByLabel('摇杆Y轴').fill('-0.5');
+  await page.getByLabel('持续时间', { exact: true }).fill('2000');
+  await page.getByRole('button', { name: '执行模拟 MCP 工具', exact: true }).click();
+  let controller = await page.evaluate(async () => (await window.gamepilot.getInputState()).value.controller);
+  assert.deepEqual(controller.rightStick, { x: .25, y: -.5 });
+  await page.getByLabel('MCP 工具选择').selectOption('gamepad_set_trigger');
+  await page.getByLabel('扳机类型').selectOption('left'); await page.getByLabel('扳机深度').fill('0.4');
+  await page.getByRole('button', { name: '执行模拟 MCP 工具', exact: true }).click();
+  controller = await page.evaluate(async () => (await window.gamepilot.getInputState()).value.controller);
+  assert.equal(controller.leftTrigger, .4);
+  await page.getByLabel('MCP 工具选择').selectOption('gamepad_reset_all');
+  await page.getByRole('button', { name: '执行强制归零', exact: true }).click();
+  controller = await page.evaluate(async () => (await window.gamepilot.getInputState()).value.controller);
+  assert.equal(controller.neutral, true); assert.equal(controller.activeTimers, 0);
+  await page.getByRole('button', { name: /追踪 Trace/ }).click();
   scenario = 'stall'; await run();
   await expect(page.getByRole('button', { name: '■ 取消运行' })).toBeEnabled();
   const closeSnapshot = await page.evaluate(async () => (await window.gamepilot.getSnapshot()).value);

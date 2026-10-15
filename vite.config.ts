@@ -9,6 +9,6 @@ export default defineConfig(({ mode }) => ({
       return context.server ? html.replace("script-src 'self'", "script-src 'self' 'unsafe-inline'") : html;
     },
   }],
-  build: { outDir: mode === 'web' ? '../../dist/web' : '../../dist/renderer', emptyOutDir: true },
+  build: { outDir: '../../dist/renderer', emptyOutDir: true },
   server: { host: '127.0.0.1', port: 5174, strictPort: true },
 }));

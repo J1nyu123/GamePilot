@@ -1,7 +1,10 @@
-import type { ApproachSpec, ApproachStats } from './approach';
-import type { Assignment } from '../benchmarks/campaign';
-export type RunStatus = 'idle' | 'running' | 'canceling' | 'pausing' | 'paused' | 'protocol_passed' | 'control_passed' | 'succeeded' | 'blocked' | 'failed' | 'canceled' | 'timed_out' | 'budget_exceeded' | 'incomplete';
-export type ExecutionMode = 'simulation' | 'virtual-xbox' | 'verified-xbox' | 'approach-xbox';
+import type { ApproachStats } from './approach';
+import type { ModelConnectionInfo, ModelConnectionInput, ConnectionStatus } from './model-connection';
+import type { CaptureState, FrameEvidence, GameWindow } from './capture';
+import type { InputDebugState, InputMode, InputCommand } from './input';
+import type { GoalSpec, KeyObservation, ReleaseEvidence, VerificationResult, Verdict } from './verification';
+export type RunStatus = 'idle' | 'running' | 'canceling' | 'pausing' | 'paused' | 'completed' | 'protocol_passed' | 'control_passed' | 'succeeded' | 'blocked' | 'failed' | 'canceled' | 'timed_out' | 'budget_exceeded' | 'incomplete';
+export type ExecutionMode = 'simulation' | 'keyboard' | 'gamepad';
 export interface ImportedImage {
   id: string; name: string; path: string; importedAt: number; mimeType: 'image/png' | 'image/jpeg';
   width: number; height: number; size: number; dataUrl: string;
@@ -9,13 +12,15 @@ export interface ImportedImage {
 }
 export interface ConfigSummary {
   status: 'ready' | 'missing' | 'invalid'; modelId: string; provider: string;
-  configPath: string; message: string; endpoint?: string;
+  configPath: string; message: string; endpoint?: string; connectionStatus?: ConnectionStatus; supportsImages?: boolean;
 }
 export interface RunSummary {
   status: Exclude<RunStatus, 'idle' | 'running' | 'canceling' | 'pausing' | 'paused'>; simulated: boolean; gameOutcome: 'unverified' | Verdict;
   turns: number; completedTools: number; toolErrors: number; finalText: string; error?: string;
-  approach?: ApproachStats; verification?: VerificationResult; metrics?: { moves: number; waits: number; observations: number; verifierCalls: number };
-  runResult?: import('./run').RunResult;
+  intent?: 'chat' | 'observe' | 'act' | 'clarify';
+  // Historical trace fields, used only by retained display components.
+  approach?: ApproachStats; verification?: VerificationResult;
+  runResult?: { status: RunStatus; taskOutcome: 'unverified' | Verdict; stopReason: string; strategy?: 'direct' | 'agent' };
 }
 export interface AgentEvent {
   runId: string; sequence: number; timestamp: number; type: string; turn?: number;
@@ -25,27 +30,32 @@ export interface AgentEvent {
   diagnostics?: { contentTypes: string[]; textChars: number; thinkingChars: number; toolCallCount: number;
     tokenUsage?: { input: number; output: number; reasoning?: number; total: number } };
   modelId?: string; maxTokens?: number; thinkingMode?: string;
-  observationId?: string; evidence?: FrameEvidence;
-  simulated?: boolean;
+  observationId?: string; evidence?: FrameEvidence; simulated?: boolean;
   verification?: VerificationResult; release?: ReleaseEvidence;
 }
-export interface RunSnapshot { runId: string; status: RunStatus; imageId: string; prompt: string; events: AgentEvent[]; summary?: RunSummary; input?: ImportedImage; observations?: KeyObservation[]; goal?: GoalSpec }
+export interface RunSnapshot {
+  runId: string; status: RunStatus; imageId: string; prompt: string; events: AgentEvent[];
+  summary?: RunSummary; input?: ImportedImage; observations?: KeyObservation[]; goal?: GoalSpec;
+}
 export type Result<T> = { ok: true; value: T } | { ok: false; error: string };
 export interface DebugApi {
-  getP4Assignment(campaignId: string): Promise<Result<Assignment | null>>;
-  getRuntimeCapabilities(): Promise<Result<{ realMovement: boolean; maxRealTools: number; goalVerification?: boolean; targetApproach?: boolean }>>;
+  getModelConnection(): Promise<Result<ModelConnectionInfo>>;
+  saveModelConnection(input: ModelConnectionInput): Promise<Result<ModelConnectionInfo>>;
+  testModelConnection(): Promise<Result<ModelConnectionInfo>>;
+  resetModelConnection(): Promise<Result<ModelConnectionInfo>>;
+  getRuntimeCapabilities(): Promise<Result<{ realMovement: boolean; maxRealTools: number; simulatedMcp: true }>>;
   getInputState(): Promise<Result<InputDebugState>>;
   connectInput(mode: InputMode): Promise<Result<null>>;
   disconnectInput(): Promise<Result<null>>;
-  executeInput(skill: ManualSkill): Promise<Result<{ runId: string }>>;
+  executeInput(command: InputCommand): Promise<Result<unknown>>;
   stopInput(): Promise<Result<null>>;
   onInput(callback: (state: InputDebugState) => void): () => void;
   getConfig(): Promise<Result<ConfigSummary>>;
   importImage(): Promise<Result<ImportedImage | null>>;
-  startRun(input: { imageId: string; prompt: string; timeoutMs: number; executionMode?: ExecutionMode; successCondition?: string; benchmark?: Assignment; approach?: Omit<ApproachSpec, 'targetId'>; executionStrategy?: import('./run').ExecutionStrategy }): Promise<Result<{ runId: string }>>;
-  pauseRun(runId: string): Promise<Result<null>>;
-  resumeRun(runId: string): Promise<Result<null>>;
-  takeoverRun(runId: string): Promise<Result<null>>;
+  connectGamepad(): Promise<Result<{ connected: boolean }>>;
+  disconnectGamepad(): Promise<Result<null>>;
+  sendMessage(input: { prompt: string; timeoutMs: number; executionMode?: ExecutionMode }): Promise<Result<{ runId: string }>>;
+  startRun(input: { imageId: string; prompt: string; timeoutMs: number; executionMode?: ExecutionMode }): Promise<Result<{ runId: string }>>;
   cancelRun(runId: string): Promise<Result<null>>;
   openLogs(runId: string): Promise<Result<null>>;
   getSnapshot(): Promise<Result<RunSnapshot | null>>;
@@ -57,8 +67,5 @@ export interface DebugApi {
   getCaptureState(): Promise<Result<CaptureState>>;
   onCapture(callback: (state: CaptureState) => void): () => void;
 }
-export const channels = { p4: 'debug:p4', pause: 'debug:pause', resume: 'debug:resume', takeover: 'debug:takeover', capabilities: 'debug:capabilities', config: 'debug:config', image: 'debug:image', start: 'debug:start', cancel: 'debug:cancel', logs: 'debug:logs', snapshot: 'debug:snapshot', event: 'debug:event' } as const;
-import type { CaptureState, FrameEvidence, GameWindow } from './capture';
-import type { InputDebugState, InputMode, ManualSkill } from './input';
-import type { GoalSpec, KeyObservation, ReleaseEvidence, VerificationResult, Verdict } from './verification';
+export const channels = { gamepadConnect: 'gamepad:connect', gamepadDisconnect: 'gamepad:disconnect', message: 'debug:message', capabilities: 'debug:capabilities', config: 'debug:config', image: 'debug:image', start: 'debug:start', cancel: 'debug:cancel', logs: 'debug:logs', snapshot: 'debug:snapshot', event: 'debug:event' } as const;
 export const captureChannels = { list: 'capture:list', start: 'capture:start', stop: 'capture:stop', frame: 'capture:frame', state: 'capture:state', update: 'capture:update' } as const;

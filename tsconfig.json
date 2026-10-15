@@ -4,5 +4,5 @@
     "strict": true, "esModuleInterop": true, "skipLibCheck": true, "noEmit": true,
     "lib": ["ES2022", "DOM", "DOM.Iterable"], "types": ["node", "vite/client"]
   },
-  "include": ["src", "tests/*.ts", "vite.config.ts", "server.ts"]
+  "include": ["src", "tests/*.ts", "vite.config.ts"]
 }

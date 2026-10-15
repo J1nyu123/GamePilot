@@ -10,7 +10,7 @@ try {
   app = await electron.launch({ args: ['.'], env, timeout: 30000 });
   const page = await app.firstWindow(), errors = [];
   page.on('pageerror', error => errors.push(error.message));
-  await expect(page.getByRole('heading', { name: 'GamePilot', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: /^GamePilot/ })).toBeVisible();
   await expect(page.getByRole('button', { name: /选择 PNG/ })).toBeVisible();
   await expect(page.locator('.config-message')).not.toHaveText('正在读取模型配置…');
   const csp = await page.locator('meta[http-equiv="Content-Security-Policy"]').getAttribute('content');

@@ -14,7 +14,7 @@ export interface ControllerState {
 
 /**
  * ControllerBackend provides atomic, zero-prior virtual gamepad control.
- * It manages simulated state only. Real input uses the guarded Electron service.
+ * It manages simulated state only and never creates a physical controller.
  * Every simulated hold expires after at most ten seconds.
  */
 export class ControllerBackend {
@@ -26,10 +26,7 @@ export class ControllerBackend {
 
   private timers = new Map<string, NodeJS.Timeout>();
   constructor(options: { rootDir?: string; forceEmulator?: boolean } = {}) {
-    // The imported bridge does not consume lease/ACK replies. Until it uses
-    // PythonGamepad's verified protocol, MCP exposes only an in-memory emulator.
-    // Real input remains available through Electron's existing guarded service.
-    if (options.forceEmulator === false) throw new Error('MCP native bridge is not validated; use Electron for real input');
+    if (options.forceEmulator === false) throw new Error('Native input is not validated or available; MCP provides an in-memory emulator only');
   }
 
   /**

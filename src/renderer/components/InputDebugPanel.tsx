@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import type { InputDebugState, InputMode, ManualSkill, XboxButton } from '../../contracts/input';
+import type { InputDebugState, InputMode, InputCommand, XboxButton } from '../../contracts/input';
 import { buttons } from '../../input/skills';
 import { GAMEPAD_TOOL_DEFINITIONS } from '../../mcp/tool-definitions';
 
@@ -111,7 +111,7 @@ function JoystickWidget({
 }
 
 export default function InputDebugPanel({ state, modelBusy, onConnect, onDisconnect, onExecute, onStop }: {
-  state: InputDebugState; modelBusy: boolean; onConnect(mode: InputMode): void; onDisconnect(): void; onExecute(skill: ManualSkill): void; onStop(): void;
+  state: InputDebugState; modelBusy: boolean; onConnect(mode: InputMode): void; onDisconnect(): void; onExecute(command: InputCommand): void; onStop(): void;
 }) {
   const [tab, setTab] = useState<'mcp' | 'legacy'>('mcp');
   const [mode, setMode] = useState<InputMode>('dry-run');
@@ -138,49 +138,38 @@ export default function InputDebugPanel({ state, modelBusy, onConnect, onDisconn
   useEffect(() => { if (modelBusy && panel.current) panel.current.open = false; }, [modelBusy]);
 
   const connected = state.status !== 'disconnected' && state.status !== 'connecting';
-  const busy = ['connecting', 'preparing', 'executing', 'resetting'].includes(state.status);
+  const busy = modelBusy || ['connecting', 'preparing', 'resetting'].includes(state.status);
 
   // Reflect live deflection during executing state
-  const liveLeftStickX = state.status === 'executing' && state.lastCommand?.skill === 'move_for'
-    ? (state.lastCommand.direction === 'left' ? -state.lastCommand.strength : state.lastCommand.direction === 'right' ? state.lastCommand.strength : 0)
+  const liveLeftStickX = state.status === 'executing' && state.controller
+    ? state.controller.leftStick.x
     : stickX;
 
-  const liveLeftStickY = state.status === 'executing' && state.lastCommand?.skill === 'move_for'
-    ? (state.lastCommand.direction === 'forward' ? state.lastCommand.strength : state.lastCommand.direction === 'backward' ? -state.lastCommand.strength : 0)
+  const liveLeftStickY = state.status === 'executing' && state.controller
+    ? state.controller.leftStick.y
     : stickY;
 
   const mcpConfigSnippet = JSON.stringify({
     mcpServers: {
       "virtual-gamepad": {
         command: "node",
-        args: ["--import", "tsx", "src/mcp/gamepad-mcp-server.ts"]
+        args: ["--import", "tsx", "src/mcp/gamepad-mcp-server.ts"],
+        cwd: "D:/work/GamePilot"
       }
     }
   }, null, 2);
 
   const handleExecuteMcpTool = () => {
-    if (selectedTool === 'gamepad_press_button') {
-      onExecute({ skill: 'press_button', button: mcpButton, durationMs: mcpDuration });
-    } else if (selectedTool === 'gamepad_set_stick') {
-      if (stickType !== 'left') return; // The host ManualSkill contract controls only the left stick.
-      const activeX = stickType === 'left' ? stickX : rightStickX;
-      const activeY = stickType === 'left' ? stickY : rightStickY;
-      const dir = Math.abs(activeX) > Math.abs(activeY)
-        ? (activeX > 0 ? 'right' : 'left')
-        : (activeY > 0 ? 'forward' : 'backward');
-      onExecute({ skill: 'move_for', direction: dir, strength: Math.max(Math.abs(activeX), Math.abs(activeY), 0.1), durationMs: mcpDuration });
-    } else if (selectedTool === 'gamepad_reset_all') {
-      setStickX(0);
-      setStickY(0);
-      setRightStickX(0);
-      setRightStickY(0);
-      onStop();
-    }
+    const args = selectedTool === 'gamepad_press_button' ? { button: mcpButton, duration_ms: mcpDuration }
+      : selectedTool === 'gamepad_release_button' ? { button: mcpButton }
+      : selectedTool === 'gamepad_set_stick' ? { stick: stickType, x: stickType === 'left' ? stickX : rightStickX, y: stickType === 'left' ? stickY : rightStickY, duration_ms: mcpDuration }
+      : selectedTool === 'gamepad_set_trigger' ? { trigger: triggerType, value: triggerVal, duration_ms: mcpDuration } : {};
+    onExecute({ tool: selectedTool, args });
   };
 
   return <details className="input-debug-panel" ref={panel} open>
     <summary>
-      <span>🎮 虚拟手柄工具 <span className="muted">/ MCP & ViGEm 零先验硬件驱动</span></span>
+      <span>🎮 虚拟手柄工具 <span className="muted">/ MCP 内存模拟</span></span>
       <span className="input-summary">{state.message}</span>
       <span className={state.neutral === true ? 'success-color' : 'muted'}>
         {state.neutral === true ? '● 摇杆已安全居中 (Neutral)' : state.neutral === false ? '▲ 动作执行中' : '未知状态'}
@@ -223,8 +212,8 @@ export default function InputDebugPanel({ state, modelBusy, onConnect, onDisconn
       {/* Right Stick Visualizer */}
       <JoystickWidget
         label="右摇杆 RS (镜头视角)"
-        x={rightStickX}
-        y={rightStickY}
+        x={state.status === 'executing' && state.controller ? state.controller.rightStick.x : rightStickX}
+        y={state.status === 'executing' && state.controller ? state.controller.rightStick.y : rightStickY}
         onChange={(nx, ny) => {
           setStickType('right');
           setRightStickX(nx);
@@ -300,12 +289,12 @@ export default function InputDebugPanel({ state, modelBusy, onConnect, onDisconn
         style={{ fontSize: '10px', padding: '4px 8px' }}
         onClick={() => setTab('legacy')}
       >
-        传统宏测试 (P2-B Legacy)
+        快捷动作
       </button>
       <div style={{ marginLeft: 'auto', display: 'flex', gap: '6px', alignItems: 'center' }}>
         <select aria-label="手柄服务模式" value={mode} disabled={connected || busy} onChange={e => setMode(e.target.value as InputMode)}>
           <option value="dry-run">内存仿真 · 跨平台无驱动</option>
-          <option value="virtual-xbox">ViGEm 真实虚拟 Xbox (Windows)</option>
+
         </select>
         {!connected ? (
           <button type="button" className="button secondary" disabled={busy || modelBusy} onClick={() => onConnect(mode)}>
@@ -404,10 +393,10 @@ export default function InputDebugPanel({ state, modelBusy, onConnect, onDisconn
           <button
             type="button"
             className="button primary"
-            disabled={modelBusy || state.status !== 'ready' || !['gamepad_press_button', 'gamepad_set_stick', 'gamepad_reset_all'].includes(selectedTool) || (selectedTool === 'gamepad_set_stick' && stickType !== 'left') || mcpDuration > 1500 || mcpDuration < 20}
+            disabled={busy || !['ready', 'executing'].includes(state.status) || (['gamepad_press_button', 'gamepad_set_stick', 'gamepad_set_trigger'].includes(selectedTool) && (!Number.isInteger(mcpDuration) || mcpDuration > 5000 || mcpDuration < 20))}
             onClick={handleExecuteMcpTool}
           >
-            {selectedTool === 'gamepad_reset_all' ? '执行强制归零' : '通过当前手柄服务执行（按钮 / 左摇杆）'}
+            {selectedTool === 'gamepad_reset_all' ? '执行强制归零' : '执行模拟 MCP 工具'}
           </button>
           <button
             type="button"
@@ -469,7 +458,7 @@ export default function InputDebugPanel({ state, modelBusy, onConnect, onDisconn
           disabled={modelBusy || state.status !== 'ready'}
           onClick={() => onExecute(skill === 'move_for' ? { skill: 'move_for', direction, strength, durationMs: duration } : { skill: 'press_button', button, durationMs: duration })}
         >
-          {state.mode === 'virtual-xbox' ? '执行（3秒准备）' : '执行调试动作'}
+          执行调试动作
         </button>
         <button type="button" className="button danger" disabled={!connected || state.status === 'resetting'} onClick={onStop}>
           停止并归零
@@ -479,10 +468,10 @@ export default function InputDebugPanel({ state, modelBusy, onConnect, onDisconn
 
     {state.lastResult && (
       <div className="input-result" role="status">
-        {state.lastResult.status === 'executed' ? '输入执行完成' : state.lastResult.status === 'cancelled' ? '输入已取消' : '输入异常'} · 零先验物理输入回执
+        {state.lastResult.status === 'executed' ? '模拟命令已接收' : state.lastResult.status === 'cancelled' ? '输入已取消' : '输入异常'} · MCP 内存状态回执
         <details>
           <summary>输入协议与历史队列 (History & Neutral ACK)</summary>
-          <pre className="json-block">{JSON.stringify({ lastCommand: state.lastCommand, lastResult: state.lastResult, history: state.history }, null, 2)}</pre>
+          <pre className="json-block">{JSON.stringify({ controller: state.controller, lastCommand: state.lastCommand, lastResult: state.lastResult, history: state.history }, null, 2)}</pre>
         </details>
       </div>
     )}
