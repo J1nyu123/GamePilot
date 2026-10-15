@@ -9,10 +9,10 @@ export const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export const piRoot = resolve(process.env.PI_SOURCE_DIR || resolve(root, '../pi'));
 const pinned = '4270522473e677ddba7b093caa0064a3df51d459';
 export async function buildHost() {
-  await mkdir(resolve(root, 'dist/python'), { recursive: true });
-  await copyFile(resolve(root, 'python/gamepad_service.py'), resolve(root, 'dist/python/gamepad_service.py'));
   await mkdir(resolve(root, 'dist/capture'), { recursive: true });
   for (const asset of ['capture.html', 'native-window.ps1']) await copyFile(resolve(root, 'src/capture', asset), resolve(root, 'dist/capture', asset));
+  await copyFile(resolve(root, 'src/input/windows-keyboard.ps1'), resolve(root, 'dist/capture/windows-keyboard.ps1'));
+  await copyFile(resolve(root, 'src/input/virtual-gamepad.py'), resolve(root, 'dist/capture/virtual-gamepad.py'));
   if (execFileSync('git', ['-C', piRoot, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim() !== pinned) throw new Error('Pi source commit mismatch');
   const paths = JSON.parse(await readFile(resolve(piRoot, 'tsconfig.json'), 'utf8')).compilerOptions.paths;
   const piPlugin = { name: 'pinned-pi-source', setup(builder) {

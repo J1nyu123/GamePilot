@@ -1,32 +1,31 @@
-import type { ApproachSpec } from '../contracts/approach';
-import type { ExecutionStrategy } from '../contracts/run';
-import { createApproachExperiment } from '../experiments/approach';
-import { createRealExecution } from '../runtime/real-execution';
-import { nextAssignment, reserveAssignment, type Assignment } from '../benchmarks/campaign';
-import { ipcMain, dialog, nativeImage, shell, BrowserWindow, globalShortcut } from 'electron';
-import { readFile, stat, mkdir, writeFile, appendFile } from 'node:fs/promises';
+import { ipcMain, dialog, nativeImage, shell, BrowserWindow } from 'electron';
+import { readFile, stat, mkdir, writeFile } from 'node:fs/promises';
 import { basename, extname, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { channels, captureChannels, type ImportedImage, type Result, type ExecutionMode } from '../contracts/debug';
-import { configSummary, loadModelConfig } from './model-config';
-import { DebugSession } from './session';
-import { runValidation } from '../agent/validation-runtime';
+import { loadModelConfig } from './model-config';
+import { ModelConnection } from '../models/connection';
+import { modelChannels, type ModelConnectionInput } from '../contracts/model-connection';
+import { DebugSession } from '../runtime/session';
+import { runValidation, type ValidationOptions } from '../agent/validation-runtime';
+import { runConversation, type ConversationMessage } from '../agent/conversation';
+import type { RunSummary } from '../contracts/debug';
+import type { FrameEvidence } from '../contracts/capture';
 import { NativeWindows } from '../capture/native-window';
 import { WindowStream } from '../capture/window-stream';
 import { CaptureController } from '../capture/controller';
 import { toObservation } from '../capture/observation';
-import { ManualInputController } from '../input/manual-controller';
-import { findPython } from '../input/python-client';
-import { inputChannels, type InputMode, type ManualSkill } from '../contracts/input';
-import type { GoalSpec } from '../contracts/verification';
+import { gameLoopRegistry } from '../agent/game-loop';
+import { VirtualGamepad } from '../input/virtual-gamepad';
+import { gamepadLoopRegistry } from '../agent/gamepad-loop';
+import { sendGameKeys } from '../input/windows-keyboard';
+import { SimulatedInputController } from '../input/simulated-controller';
+import { inputChannels, type InputMode, type InputCommand } from '../contracts/input';
 
 // Host-only dependency injection for isolated tests; no renderer or environment bypass.
-export function registerIpc(window: BrowserWindow, root: string, overrides: {
-  input?: ConstructorParameters<typeof ManualInputController>[3]; emergencyShortcut?: string;
-  isForeground?: (sourceId: string) => Promise<boolean>;
-} = {}) {
-  const emergencyShortcut = overrides.emergencyShortcut ?? 'F8';
-  let inputController: ManualInputController;
+export function registerIpc(window: BrowserWindow, root: string) {
+  const modelConnection = new ModelConnection(() => loadModelConfig(root));
+  let inputController: SimulatedInputController;
   let selected: { image: ImportedImage; bytes: Buffer; selectedAt?: number } | undefined;
   const native = new NativeWindows(resolve(root, 'dist/capture/native-window.ps1'));
   const stream = new WindowStream(resolve(root, 'dist/capture/capture.html'));
@@ -38,53 +37,110 @@ export function registerIpc(window: BrowserWindow, root: string, overrides: {
   }, state => {
     if (!window.isDestroyed() && !window.webContents.isDestroyed()) try { window.webContents.send(captureChannels.update, state); } catch { /* Window is closing. */ }
   });
-  const session = new DebugSession(resolve(root, 'runs'), runValidation, event => {
+  const gamepad = new VirtualGamepad(root);
+  const history: ConversationMessage[] = [];
+  const executeTask = async (options: ValidationOptions, evidence?: FrameEvidence): Promise<RunSummary> => {
+    if (options.executionMode === 'keyboard' || options.executionMode === 'gamepad') {
+      if (!evidence) throw new Error('真实输入需要实时游戏窗口');
+      const assertSource = () => capture.assertCurrent(evidence.sourceId, evidence.generation, evidence.identity);
+      const captureFrame = async (signal: AbortSignal) => {
+          signal.throwIfAborted(); await assertSource();
+          const frame = await captureInput();
+          await assertSource(); signal.throwIfAborted();
+          await options.recordObservation?.(frame.image, frame.bytes);
+          return { id: frame.image.id, data: frame.bytes.toString('base64'), mimeType: frame.image.mimeType };
+      };
+      const focus = async (signal: AbortSignal) => {
+        signal.throwIfAborted(); await assertSource();
+        await native.focus(evidence.sourceId, evidence.identity); signal.throwIfAborted();
+      };
+      if (options.executionMode === 'gamepad') {
+        await gamepad.connect();
+        const registry = gamepadLoopRegistry({ capture: captureFrame, act: async (args, signal) => {
+          await focus(signal); return gamepad.action(evidence.sourceId, evidence.identity, args, signal);
+        } }, options.signal);
+        try { return await runValidation({ ...options, toolRegistry: registry }); }
+        finally { if (options.signal.aborted) await gamepad.close(); }
+      }
+      const registry = gameLoopRegistry({
+        capture: captureFrame,
+        act: async (keys, durationMs, signal) => {
+          signal.throwIfAborted(); await assertSource();
+          await native.focus(evidence.sourceId, evidence.identity);
+          signal.throwIfAborted();
+          return sendGameKeys(resolve(root, 'dist/capture/windows-keyboard.ps1'), evidence.sourceId, evidence.identity, keys, durationMs, signal);
+        },
+      }, options.signal);
+      return runValidation({ ...options, toolRegistry: registry });
+    }
+    return inputController.withRun(options.signal,
+    registry => runValidation({ ...options, toolRegistry: registry }),
+    () => options.onEvent({ sequence: 0, timestamp: Date.now(), type: 'input_released', simulated: true, result: { neutral: true }, text: '模拟手柄已归零' }));
+  };
+  const session: DebugSession = new DebugSession(resolve(root, 'runs'), async (options): Promise<RunSummary> => {
+    if (!options.conversation) return executeTask(options, session.current?.input?.evidence);
+    const imported = selected?.image.source === 'import' ? selected : undefined;
+    const visualContext = { source: imported ? 'import' as const : capture.state.status === 'streaming' ? 'window' as const : 'none' as const,
+      supportsImages: (await modelConnection.summary()).supportsImages === true,
+      name: imported?.image.name ?? (capture.state.status === 'streaming' ? capture.state.window?.title : undefined) };
+    const result = await runConversation({ ...options, visualContext }, history, async decision => {
+      const reply = (text: string): RunSummary => {
+        options.onEvent({ sequence: 0, timestamp: Date.now(), type: 'model_text', text });
+        return { status: 'blocked', simulated: !['keyboard', 'gamepad'].includes(options.executionMode ?? 'simulation'), gameOutcome: 'unverified', turns: 1, completedTools: 0, toolErrors: 0, finalText: text };
+      };
+      if (!(await modelConnection.summary()).supportsImages) return reply('已识别游戏任务，但当前模型不支持图片。请在模型 API 中选择视觉模型。');
+      if (decision.intent === 'act' && ['keyboard', 'gamepad'].includes(options.executionMode ?? 'simulation') && capture.state.status !== 'streaming') return reply('已识别游戏操作任务。请先选择游戏窗口并开始预览，然后重新发送指令。');
+      let frame;
+      if (decision.intent === 'observe' && imported) frame = imported;
+      else if (capture.state.status === 'streaming') frame = await captureInput();
+      else if (imported) frame = imported;
+      else return reply('已识别需要游戏画面的任务。请先启动窗口预览或导入截图。');
+      options.signal.throwIfAborted();
+      await options.recordObservation?.(frame.image, frame.bytes);
+      const taskOptions = { ...options, conversation: false, prompt: `用户消息：${options.prompt}\n识别任务：${decision.task}`,
+        image: { type: 'image' as const, data: frame.bytes.toString('base64'), mimeType: frame.image.mimeType },
+        // Keep Trace cycles distinct from the text-only routing request.
+        onEvent: (event: Parameters<ValidationOptions['onEvent']>[0]) => options.onEvent({ ...event, turn: event.turn === undefined ? undefined : event.turn + 1 }),
+      };
+      if (decision.intent === 'observe') return runValidation({ ...taskOptions, toolRegistry: {
+        tools: [], maxCalls: 0, allow: () => '观察意图不允许操作游戏',
+        systemPrompt: 'You are GamePilot. Answer the user in Chinese based only on the supplied game image. Describe uncertainty. This is a read-only observation request: do not claim to have moved or interacted with anything.',
+      } });
+      return executeTask(taskOptions, frame.image.evidence);
+    });
+    if (!options.signal.aborted && ['completed', 'blocked', 'control_passed', 'protocol_passed'].includes(result.status)) {
+      history.push({ role: 'user', text: options.prompt }, { role: 'assistant', text: result.finalText });
+      history.splice(0, Math.max(0, history.length - 12));
+    }
+    return result;
+  }, event => {
     if (!window.isDestroyed() && !window.webContents.isDestroyed()) {
       try { window.webContents.send(channels.event, event); } catch { /* A closing renderer must not break trace persistence. */ }
     }
   });
-  let inputLog = Promise.resolve(), inputLogFailed = false;
-  inputController = new ManualInputController(findPython(root), resolve(root, 'dist/python/gamepad_service.py'), state => {
-    if (!window.isDestroyed() && !window.webContents.isDestroyed()) try { window.webContents.send(inputChannels.update, state); } catch { /* Closing. */ }
-    if (inputLogFailed) return;
-    // Minimal P2-B diagnostic log, kept separate from model sessions.
-    const record = { timestamp: Date.now(), ...state }; delete (record as { history?: unknown }).history;
-    inputLog = inputLog.then(async () => { await mkdir(resolve(root, 'input-debug'), { recursive: true });
-      await appendFile(resolve(root, 'input-debug/events.jsonl'), JSON.stringify(record) + '\n'); }).catch(() => {
-        if (!inputLogFailed) { inputLogFailed = true; session.cancelActive(); void inputController.stop('输入日志写入失败').catch(() => {}); }
-      });
-  }, overrides.input);
+  inputController = new SimulatedInputController(state => {
+    if (!window.isDestroyed() && !window.webContents.isDestroyed()) try { window.webContents.send(inputChannels.update, state); } catch { /* Closing renderer. */ }
+  });
   const handle = (channel: string, fn: (...args: any[]) => unknown) => ipcMain.handle(channel, async (event, ...args): Promise<Result<unknown>> => {
     if (event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame) return { ok: false, error: '无效请求来源' };
     try { return { ok: true, value: await fn(...args) }; }
     catch (error) { return { ok: false, error: error instanceof Error ? error.message : '操作失败' }; }
   });
-  handle(channels.p4, (id: string) => nextAssignment(root, id));
-  handle(channels.config, () => configSummary(root));
-  handle(channels.capabilities, () => ({ realMovement: true, maxRealTools: 1, goalVerification: true, targetApproach: true }));
+  handle(channels.gamepadConnect, async () => { if (session.busy) throw new Error('任务运行中'); await gamepad.connect(); return { connected: gamepad.connected }; });
+  handle(channels.gamepadDisconnect, async () => { session.cancelActive('断开真实手柄'); await session.waitForEnd(); await gamepad.close(); return null; });
+  handle(channels.config, () => modelConnection.summary());
+  const assertModelEditable = () => { if (session.busy || inputController.busy) throw new Error('任务或手柄输入执行期间不能更改或测试模型配置'); };
+  handle(modelChannels.get, () => modelConnection.info());
+  handle(modelChannels.save, (input: ModelConnectionInput) => { assertModelEditable(); return modelConnection.save(input); });
+  handle(modelChannels.reset, () => { assertModelEditable(); return modelConnection.reset(); });
+  handle(modelChannels.test, () => { assertModelEditable(); return modelConnection.test(); });
+  handle(channels.capabilities, () => ({ realMovement: true, maxRealTools: 4, simulatedMcp: true }));
   handle(channels.snapshot, () => session.current);
   handle(inputChannels.state, () => inputController.state);
-  handle(inputChannels.connect, async (mode: InputMode) => {
-    if (session.busy) throw new Error('模型任务执行期间不能连接手柄');
-    if (mode === 'virtual-xbox' && !globalShortcut.register(emergencyShortcut, () => { if (session.controlsInput) session.cancelActive(`${emergencyShortcut} 紧急停止`); void inputController.stop(`${emergencyShortcut} 紧急停止`).catch(() => {}); })) throw new Error(`${emergencyShortcut} 被占用，请退出原型或其他占用程序后重试`);
-    try { await inputController.connect(mode); } catch (error) { if (mode === 'virtual-xbox') globalShortcut.unregister(emergencyShortcut); throw error; }
-    return null;
-  });
-  handle(inputChannels.disconnect, async () => { if (session.controlsInput) { session.cancelActive(); await session.close(); } try { await inputController.disconnect(); } finally { globalShortcut.unregister(emergencyShortcut); } return null; });
-  handle(inputChannels.stop, async () => { if (session.controlsInput) session.cancelActive(); await inputController.stop(); return null; });
-  handle(inputChannels.execute, async (skill: ManualSkill) => {
-    if (inputLogFailed) throw new Error('输入日志写入失败，请检查目录权限并重启应用');
-    if (session.busy) throw new Error('模型任务执行期间不能发送手柄输入');
-    const state = capture.state, selectedWindow = state.window;
-    const guard = async () => {
-      if (!selectedWindow) throw new Error('真实输入需先选择游戏窗口并开始预览');
-      await capture.assertCurrent(selectedWindow.id, state.generation, selectedWindow.identity);
-      const info = await native.info(selectedWindow.id);
-      if (!info || info.identity !== selectedWindow.identity || !(overrides.isForeground ? await overrides.isForeground(selectedWindow.id) : info.foreground)) throw new Error('游戏窗口失焦或已关闭，已停止输入');
-    };
-    if (inputController.state.mode === 'virtual-xbox' && (!selectedWindow || state.status !== 'streaming')) throw new Error('真实输入需先选择游戏窗口并开始预览');
-    return inputController.execute(skill, guard);
-  });
+  handle(inputChannels.connect, (mode: InputMode) => { if (session.busy) throw new Error('运行期间不能连接手柄'); inputController.connect(mode); return null; });
+  handle(inputChannels.disconnect, async () => { session.cancelActive('断开模拟手柄'); await session.waitForEnd(); inputController.disconnect(); return null; });
+  handle(inputChannels.stop, () => { session.cancelActive('手柄归零'); inputController.stop(); return null; });
+  handle(inputChannels.execute, (command: InputCommand) => { if (session.busy) throw new Error('运行期间不能发送手动输入'); return inputController.execute(command); });
   handle(captureChannels.list, () => capture.list());
   handle(captureChannels.state, () => capture.state);
   handle(captureChannels.start, async (id: string) => {
@@ -92,7 +148,7 @@ export function registerIpc(window: BrowserWindow, root: string, overrides: {
     if (typeof id !== 'string' || !(await capture.list()).some(w => w.id === id)) throw new Error('请从窗口列表选择有效窗口');
     await capture.start(id); return null;
   });
-  handle(captureChannels.stop, async () => { if (session.controlsInput) { session.cancelActive(); await session.close(); } if (inputController.busy) await inputController.stop('停止窗口预览'); capture.stop(); return null; });
+  handle(captureChannels.stop, async () => { session.cancelActive('停止窗口预览'); await session.waitForEnd(); capture.stop(); return null; });
   const captureInput = async () => {
     const frame = await capture.freshFrame();
     const selectedAt = performance.now();
@@ -133,55 +189,28 @@ export function registerIpc(window: BrowserWindow, root: string, overrides: {
     if (session.busy) throw new Error('运行期间不能替换图片');
     selected = { image, bytes }; return image;
   });
-  handle(channels.start, async (input: { imageId: string; prompt: string; timeoutMs: number; executionMode?: ExecutionMode; successCondition?: string; benchmark?: Assignment; approach?: Omit<ApproachSpec, 'targetId'>; executionStrategy?: ExecutionStrategy }) => {
-    if (session.busy) throw new Error('已有运行正在进行');
-    if (inputController.busy) throw new Error('请等待手柄调试输入结束后运行模型');
-    if (!input || !selected || input.imageId !== selected.image.id) throw new Error('请先导入本次输入图片');
+  handle(channels.start, async (input: { imageId: string; prompt: string; timeoutMs: number; executionMode?: ExecutionMode }) => {
+    if (session.busy || inputController.busy) throw new Error('已有运行正在进行');
+    if (!input || !selected || input.imageId !== selected.image.id) throw new Error('请先导入或截取本次输入图片');
     if (typeof input.prompt !== 'string' || !input.prompt.trim() || input.prompt.length > 8000) throw new Error('任务需为 1–8000 字符');
     if (!Number.isInteger(input.timeoutMs) || input.timeoutMs < 1000 || input.timeoutMs > 300000) throw new Error('超时需为 1–300 秒');
-    const mode = input.executionMode ?? 'simulation';
-    if (!['simulation', 'virtual-xbox', 'verified-xbox', 'approach-xbox'].includes(mode)) throw new Error('无效模型工具模式');
-    let goal: GoalSpec | undefined;
-    if (input.executionStrategy !== undefined && (mode !== 'approach-xbox' || !['direct', 'agent'].includes(input.executionStrategy))) throw new Error('执行策略仅用于 P3，且必须为 direct/agent');
-    const experiment = mode === 'approach-xbox' ? createApproachExperiment(input.approach, input.successCondition!, input.executionStrategy) : undefined;
-    if (mode === 'verified-xbox' || experiment) {
-      if (typeof input.successCondition !== 'string' || !input.successCondition.trim() || input.successCondition.length > 2000) throw new Error('目标验证需填写 1–2000 字符的可见成功条件');
-      goal = experiment?.task ?? Object.freeze({ id: randomUUID(), successCondition: input.successCondition.trim() });
-    }
-    const fixed = selected;
-    const config = await loadModelConfig(root);
+    if (input.executionMode !== undefined && !['simulation', 'keyboard', 'gamepad'].includes(input.executionMode)) throw new Error('无效执行模式');
+    if (['keyboard', 'gamepad'].includes(input.executionMode ?? 'simulation') && !selected.image.evidence) throw new Error('真实输入模式必须选择实时窗口，不能使用导入图片');
+    const fixed = selected, config = await modelConnection.runtimeConfig();
     if (fixed.image.evidence) {
       const evidence = fixed.image.evidence;
-      if (fixed.selectedAt === undefined || performance.now() - fixed.selectedAt > 3000) throw new Error('窗口截图已过期，请截取新帧或在实时模式运行');
+      if (fixed.selectedAt === undefined || performance.now() - fixed.selectedAt > 3000) throw new Error('窗口截图已过期，请截取新帧');
       await capture.assertCurrent(evidence.sourceId, evidence.generation, evidence.identity);
     }
-    if (input.benchmark && (mode !== 'verified-xbox' || input.timeoutMs !== input.benchmark.timeoutMs || input.prompt.trim() !== input.benchmark.prompt || input.successCondition?.trim() !== input.benchmark.successCondition)) throw new Error('P4 必须使用冻结的目标验证任务，不能修改指令或判据');
-    if (mode === 'simulation') return session.start(fixed.image, fixed.bytes, input.prompt.trim(), input.timeoutMs, config);
-    if (inputLogFailed) throw new Error('输入日志写入失败，请检查目录权限并重启应用');
-    if (fixed.image.source !== 'window' || !fixed.image.evidence || capture.state.status !== 'streaming') throw new Error('真实模型工具必须使用预览中的游戏窗口，不接受导入图片');
-    if (inputController.state.mode !== 'virtual-xbox' || inputController.state.status !== 'ready') throw new Error('请先在手柄调试区连接真实虚拟 Xbox');
-    if (!globalShortcut.isRegistered(emergencyShortcut)) throw new Error(`${emergencyShortcut} 紧急停止未就绪，拒绝真实输入`);
-    const evidence = fixed.image.evidence;
-    const guard = async () => {
-      if (inputLogFailed) throw new Error('输入日志写入失败');
-      await capture.assertCurrent(evidence.sourceId, evidence.generation, evidence.identity);
-      const info = await native.info(evidence.sourceId);
-      if (!info || info.identity !== evidence.identity || !(overrides.isForeground ? await overrides.isForeground(evidence.sourceId) : info.foreground)) throw new Error('游戏窗口失焦或已关闭，已停止 Agent');
-    };
-    const benchmark = input.benchmark ? await reserveAssignment(root, input.benchmark, config) : undefined;
-    const execution = createRealExecution({ inputController, guard, captureInput, config, evidence, goal, experiment, interrupt: () => session.cancelActive() });
-    return session.start(fixed.image, fixed.bytes, input.prompt.trim(), input.timeoutMs, config, {
-      simulated: false, goal, benchmark, experiment, pausable: !experiment, ...execution,
-    });
+    return session.start(fixed.image, fixed.bytes, input.prompt.trim(), input.timeoutMs, config, input.executionMode);
   });
-  handle(channels.pause, (runId: string) => { session.pause(runId); return null; });
-  handle(channels.resume, (runId: string) => { session.resume(runId); return null; });
-  handle(channels.takeover, async (runId: string) => {
-    const bound = session.current?.input?.evidence;
-    if (!bound || session.current?.runId !== runId || !session.controlsInput) throw new Error('没有可接管的真实任务');
-    session.cancel(runId, '用户接管'); await session.waitForEnd();
-    if (inputController.state.neutral !== true || session.current?.summary?.status !== 'canceled') throw new Error('未确认安全取消，不能接管');
-    await native.focus(bound.sourceId, bound.identity); return null;
+  handle(channels.message, async (input: { prompt: string; timeoutMs: number; executionMode?: ExecutionMode }) => {
+    if (session.busy || inputController.busy) throw new Error('已有运行正在进行');
+    if (!input || typeof input.prompt !== 'string' || !input.prompt.trim() || input.prompt.length > 8000) throw new Error('消息需为 1–8000 字符');
+    if (!Number.isInteger(input.timeoutMs) || input.timeoutMs < 1000 || input.timeoutMs > 300000) throw new Error('超时需为 1–300 秒');
+    if (input.executionMode !== undefined && !['simulation', 'keyboard', 'gamepad'].includes(input.executionMode)) throw new Error('无效执行模式');
+    const config = await modelConnection.runtimeConfig(false);
+    return session.start(undefined, Buffer.alloc(0), input.prompt.trim(), input.timeoutMs, config, input.executionMode, true);
   });
   handle(channels.cancel, (runId: string) => { session.cancel(runId); return null; });
   handle(channels.logs, async (runId: string) => {
@@ -190,7 +219,7 @@ export function registerIpc(window: BrowserWindow, root: string, overrides: {
     const error = await shell.openPath(dir);
     if (error) throw new Error('无法打开日志目录'); return null;
   });
-  return { session, closeCapture: () => { capture.stop(); native.close(); }, closeInput: async () => {
-    try { await inputController.disconnect(); } finally { globalShortcut.unregister(emergencyShortcut); await inputLog; }
-  }, inputBusy: () => inputController.busy || inputController.state.status !== 'disconnected' };
+  return { session, closeCapture: () => { capture.stop(); native.close(); },
+    closeInput: async () => { session.cancelActive('应用关闭'); inputController.close(); await session.waitForEnd(); await gamepad.close(); },
+    inputBusy: () => gamepad.connected || inputController.busy || inputController.state.status !== 'disconnected' };
 }

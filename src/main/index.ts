@@ -2,7 +2,7 @@ import { app, BrowserWindow } from 'electron';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { registerIpc } from './ipc';
-import type { DebugSession } from './session';
+import type { DebugSession } from '../runtime/session';
 
 let window: BrowserWindow | null = null, session: DebugSession | undefined, exiting = false;
 let closeCapture = () => {};

@@ -17,7 +17,7 @@ const server = createServer(async (req, res) => {
   send({ role: 'assistant' });
   await new Promise(r => setTimeout(r, 600));
   if (input.messages.some(m => m.role === 'tool')) { send({ content: '模拟动作已完成，游戏效果未经验证。' }); send({}, 'stop'); }
-  else { send({ content: '已收到窗口截图，调用模拟工具。' }); send({ tool_calls: [{ index: 0, id: 'capture-tool', type: 'function', function: { name: 'move_for', arguments: '{"direction":"left","durationMs":200}' } }] }); send({}, 'tool_calls'); }
+  else { send({ content: '已收到窗口截图，调用模拟工具。' }); send({ tool_calls: [{ index: 0, id: 'capture-tool', type: 'function', function: { name: 'gamepad_set_stick', arguments: '{"stick":"left","x":-0.5,"y":0,"duration_ms":200}' } }] }); send({}, 'tool_calls'); }
   res.end('data: [DONE]\n\n');
 });
 await new Promise(r => server.listen(0, '127.0.0.1', r));
@@ -40,7 +40,7 @@ try {
   let state = await page.evaluate(async () => (await window.gamepilot.getCaptureState()).value);
   assert.equal(state.status, 'streaming'); assert.equal(requests, 0);
   const originalWidth = state.frame.width;
-  await page.getByRole('button', { name: '截取新帧' }).click();
+  await page.getByRole('button', { name: /快照/ }).click();
   await expect(page.getByAltText('实际发送给模型的游戏截图')).toBeVisible();
   const firstInput = await page.getByAltText('实际发送给模型的游戏截图').getAttribute('src');
   await page.getByRole('button', { name: '实时画面', exact: true }).click();
